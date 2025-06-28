@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, asdict
 from netmiko import ConnectHandler
+from netmiko.ssh_autodetect import SSHDetect
+from netmiko.ssh_dispatcher import CLASS_MAPPER
 from netmiko.exceptions import NetmikoBaseException, NetmikoAuthenticationException, NetmikoTimeoutException
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
@@ -31,19 +33,64 @@ DEFAULT_TIMEOUT = 20
 MAX_WORKERS = 10
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
+LOGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 SUPPORTED_FILE_TYPES = ("CSV Files (*.csv)",)
 SUPPORTED_EXPORT_TYPES = ("JSON Files (*.json)",)
 EXCEL_ENGINE = "openpyxl"
 
+# Vendor detection mapping based on Model SW
+VENDOR_DETECTION_MAP = {
+    'cisco_ios': ['ISR', 'C1100', 'C1000', 'C2900', 'C3900', 'CAT', 'WS-C', 'C9200', 'C9300', 'C9400', 'C9500', 'C3850', 'C3750'],
+    'cisco_nxos': ['N9K', 'N7K', 'N5K', 'N3K', 'N2K', 'Nexus'],
+    'cisco_xe': ['ASR', 'CSR', 'ISR4', 'C8000'],
+    'cisco_xr': ['ASR9', 'NCS', 'CRS'],
+    'arista_eos': ['DCS', 'CCS', 'Arista'],
+    'juniper_junos': ['EX', 'QFX', 'MX', 'SRX', 'ACX'],
+    'hp_procurve': ['ProCurve', 'Aruba', 'HP'],
+    'dell_force10': ['S4048', 'S5048', 'S6010', 'Z9100'],
+    'huawei': ['S5700', 'S6700', 'S7700', 'S9700', 'CE'],
+    'fortinet': ['FGT', 'FortiGate'],
+}
+
 # Configure logging
 os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+# Create log file handler that stores logs in memory
+class InMemoryLogHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.logs = []
+        self.max_logs = 1000  # Keep last 1000 log entries
+    
+    def emit(self, record):
+        self.logs.append({
+            'timestamp': datetime.fromtimestamp(record.created).isoformat(),
+            'level': record.levelname,
+            'message': self.format(record),
+            'module': record.module
+        })
+        # Keep only the last max_logs entries
+        if len(self.logs) > self.max_logs:
+            self.logs = self.logs[-self.max_logs:]
+    
+    def get_logs(self):
+        return self.logs
+    
+    def clear_logs(self):
+        self.logs = []
+
+# Create in-memory log handler
+in_memory_handler = InMemoryLogHandler()
+in_memory_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(DEFAULT_OUTPUT_DIR, 'network_fetcher.log')),
-        logging.StreamHandler()
+        logging.FileHandler(os.path.join(LOGS_DIR, 'network_fetcher.log')),
+        logging.StreamHandler(),
+        in_memory_handler
     ]
 )
 logger = logging.getLogger(__name__)
@@ -89,6 +136,7 @@ class ProcessingResult:
     retry_count: int = 0
     last_attempt: Optional[str] = None
     connection_status: str = DEVICE_STATUS["PENDING"]
+    detected_device_type: Optional[str] = None
 
 @dataclass
 class ProcessingSession:
@@ -102,6 +150,7 @@ class ProcessingSession:
     is_stopped: bool = False
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
+    output_file: Optional[str] = None
 
 class ConfigManager:
     """Manages configuration loading and validation."""
@@ -141,31 +190,48 @@ class ConfigManager:
         """Create a default configuration file if none exists."""
         default_config = {
             "cisco_ios": {
-                "system": [
+                "system_info": [
                     "show version",
-                    "show running-config | section hostname",
+                    "show running-config | include hostname",
                     "show inventory"
                 ],
-                "interfaces": [
+                "interface_status": [
+                    "show ip interface brief",
+                    "show interfaces status"
+                ],
+                "routing": [
+                    "show ip route summary",
+                    "show ip route"
+                ]
+            },
+            "cisco_nxos": {
+                "system_info": [
+                    "show version",
+                    "show hostname",
+                    "show inventory"
+                ],
+                "interface_status": [
                     "show ip interface brief",
                     "show interface status"
                 ],
-                "configuration": [
-                    "show running-config"
+                "routing": [
+                    "show ip route summary",
+                    "show ip route"
                 ]
             },
-            "cisco_xe": {
-                "system": [
+            "arista_eos": {
+                "system_info": [
                     "show version",
-                    "show running-config | section hostname",
+                    "show hostname",
                     "show inventory"
                 ],
-                "interfaces": [
-                    "show ip interface brief", 
+                "interface_status": [
+                    "show ip interface brief",
                     "show interface status"
                 ],
-                "configuration": [
-                    "show running-config"
+                "routing": [
+                    "show ip route summary",
+                    "show ip route"
                 ]
             }
         }
@@ -214,27 +280,65 @@ class NetworkDeviceManager:
     def __init__(self, config_manager: ConfigManager):
         self.config_manager = config_manager
     
-    def connect_and_collect_data(self, device_info: DeviceInfo, retry_count: int = 0, session: ProcessingSession = None):
+    def detect_device_type_by_model(self, model_sw: str) -> str:
+        """Detect device type based on model string."""
+        model_upper = model_sw.upper()
+        
+        for device_type, patterns in VENDOR_DETECTION_MAP.items():
+            for pattern in patterns:
+                if pattern.upper() in model_upper:
+                    logger.info(f"Detected device type '{device_type}' for model '{model_sw}'")
+                    return device_type
+        
+        logger.warning(f"Could not detect device type for model '{model_sw}', using autodetect")
+        return "autodetect"
+    
+    def connect_and_collect_data(self, device_info: DeviceInfo, model_sw: str = None, retry_count: int = 0, session: ProcessingSession = None):
         """Connect to device and collect data with error handling."""
         collected_data = {}
         start_time = datetime.now()
+        detected_device_type = None
         
         try:
-            logger.info(f"Connecting to device: {device_info.host} (attempt {retry_count + 1})")
+            # First try to detect device type from model
+            if model_sw and device_info.device_type == "autodetect":
+                detected_type = self.detect_device_type_by_model(model_sw)
+                if detected_type != "autodetect":
+                    device_info.device_type = detected_type
+            
+            logger.info(f"Connecting to device: {device_info.host} with type: {device_info.device_type} (attempt {retry_count + 1})")
             
             # Create connection parameters
             connection_params = asdict(device_info)
             
+            # If still autodetect, use SSH autodetect
+            if device_info.device_type == "autodetect":
+                try:
+                    logger.info(f"Running SSH autodetect for {device_info.host}")
+                    guesser = SSHDetect(**connection_params)
+                    best_match = guesser.autodetect()
+                    if best_match:
+                        device_info.device_type = best_match
+                        connection_params['device_type'] = best_match
+                        logger.info(f"Autodetected device type: {best_match}")
+                    guesser.disconnect()
+                except Exception as e:
+                    logger.warning(f"Autodetect failed for {device_info.host}: {e}")
+                    # Try common types
+                    device_info.device_type = "cisco_ios"  # Default fallback
+                    connection_params['device_type'] = "cisco_ios"
+            
+            detected_device_type = connection_params['device_type']
+            
             with ConnectHandler(**connection_params) as connection:
-                detected_device_type = connection.device_type
-                logger.info(f"Device {device_info.host} detected as {detected_device_type}")
+                logger.info(f"Successfully connected to {device_info.host} as {detected_device_type}")
                 
                 commands_by_category = self.config_manager.get_commands_for_device(detected_device_type)
                 
                 if not commands_by_category:
                     error_msg = f"Device type '{detected_device_type}' not supported in configuration"
                     logger.warning(error_msg)
-                    return None, error_msg, DEVICE_STATUS["FAILED"]
+                    return None, error_msg, DEVICE_STATUS["FAILED"], detected_device_type
                 
                 # Execute commands by category
                 for category, commands in commands_by_category.items():
@@ -244,7 +348,7 @@ class NetworkDeviceManager:
                     for command in commands:
                         # Check if session is stopped
                         if session and session.is_stopped:
-                            return None, "Processing stopped by user", DEVICE_STATUS["STOPPED"]
+                            return None, "Processing stopped by user", DEVICE_STATUS["STOPPED"], detected_device_type
                             
                         try:
                             logger.debug(f"Executing command on {device_info.host}: '{command}'")
@@ -265,27 +369,27 @@ class NetworkDeviceManager:
                 processing_time = (datetime.now() - start_time).total_seconds()
                 logger.info(f"Data collection completed for {device_info.host} in {processing_time:.2f}s")
                 
-                return collected_data, None, DEVICE_STATUS["SUCCESS"]
+                return collected_data, None, DEVICE_STATUS["SUCCESS"], detected_device_type
                 
         except NetmikoAuthenticationException as e:
             error_msg = f"Authentication failed for {device_info.host}: {str(e)}"
             logger.error(error_msg)
-            return None, error_msg, DEVICE_STATUS["FAILED"]
+            return None, error_msg, DEVICE_STATUS["FAILED"], detected_device_type
             
         except NetmikoTimeoutException as e:
             error_msg = f"Connection timeout for {device_info.host}: {str(e)}"
             logger.error(error_msg)
-            return None, error_msg, DEVICE_STATUS["FAILED"]
+            return None, error_msg, DEVICE_STATUS["FAILED"], detected_device_type
             
         except NetmikoBaseException as e:
             error_msg = f"Netmiko error for {device_info.host}: {str(e)}"
             logger.error(error_msg)
-            return None, error_msg, DEVICE_STATUS["FAILED"]
+            return None, error_msg, DEVICE_STATUS["FAILED"], detected_device_type
             
         except Exception as e:
             error_msg = f"Unexpected error for {device_info.host}: {str(e)}"
             logger.error(error_msg)
-            return None, error_msg, DEVICE_STATUS["FAILED"]
+            return None, error_msg, DEVICE_STATUS["FAILED"], detected_device_type
 
 
 class DataProcessor:
@@ -295,11 +399,10 @@ class DataProcessor:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
     
-    def save_results(self, results, filename: str = None):
+    def save_results(self, results, session_id: str = None):
         """Save processing results to JSON file."""
-        if filename is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"collected_data_{timestamp}.json"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"collected_data_{session_id}_{timestamp}.json" if session_id else f"collected_data_{timestamp}.json"
         
         filepath = self.output_dir / filename
         
@@ -326,6 +429,43 @@ class DataProcessor:
             logger.error(f"Error loading results from {filepath}: {e}")
             raise
     
+    def list_output_files(self):
+        """List all output files in the output directory."""
+        try:
+            files = []
+            for file_path in self.output_dir.glob("*.json"):
+                stat = file_path.stat()
+                files.append({
+                    "filename": file_path.name,
+                    "filepath": str(file_path),
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "created": datetime.fromtimestamp(stat.st_ctime).isoformat()
+                })
+            
+            # Sort by modified time, newest first
+            files.sort(key=lambda x: x["modified"], reverse=True)
+            return files
+            
+        except Exception as e:
+            logger.error(f"Error listing output files: {e}")
+            return []
+    
+    def delete_output_file(self, filename: str):
+        """Delete an output file."""
+        try:
+            filepath = self.output_dir / filename
+            if filepath.exists() and filepath.is_file():
+                filepath.unlink()
+                logger.info(f"Deleted file: {filename}")
+                return True
+            else:
+                logger.warning(f"File not found: {filename}")
+                return False
+        except Exception as e:
+            logger.error(f"Error deleting file {filename}: {e}")
+            return False
+    
     def export_to_excel(self, data, filepath: str):
         """Excel export with additional columns."""
         try:
@@ -339,6 +479,7 @@ class DataProcessor:
                     "Model_SW": item.get("model_sw", "N/A"),
                     "Status": item.get("status", "N/A"),
                     "Connection_Status": item.get("connection_status", "N/A"),
+                    "Detected_Device_Type": item.get("detected_device_type", "N/A"),
                     "Processing_Time": item.get("processing_time", "N/A"),
                     "Retry_Count": item.get("retry_count", 0),
                     "Last_Attempt": item.get("last_attempt", "N/A"),
@@ -373,6 +514,9 @@ class DataProcessor:
                 elif filter_type == "connection_status":
                     if item.get("connection_status", "").lower() == filter_value.lower():
                         filtered_data.append(item)
+                elif filter_type == "device_type":
+                    if filter_value.lower() in item.get("detected_device_type", "").lower():
+                        filtered_data.append(item)
                 elif filter_type == "all":
                     filtered_data.append(item)
             
@@ -385,8 +529,16 @@ class DataProcessor:
     def compare_configurations(self, file1_path: str, file2_path: str):
         """Configuration comparison with detailed diff analysis."""
         try:
-            data1 = self.load_results(file1_path)
-            data2 = self.load_results(file2_path)
+            # Load data from files
+            if file1_path.startswith(str(self.output_dir)):
+                data1 = self.load_results(file1_path)
+            else:
+                data1 = self.load_results(os.path.join(self.output_dir, file1_path))
+                
+            if file2_path.startswith(str(self.output_dir)):
+                data2 = self.load_results(file2_path)
+            else:
+                data2 = self.load_results(os.path.join(self.output_dir, file2_path))
             
             # Create device mapping for comparison
             devices1 = {item["ip_mgmt"]: item for item in data1}
@@ -433,8 +585,8 @@ class DataProcessor:
             changes = []
             
             # Get configuration data
-            config1 = device1.get("data", {}).get("configuration", {})
-            config2 = device2.get("data", {}).get("configuration", {})
+            config1 = device1.get("data", {})
+            config2 = device2.get("data", {})
             
             if not config1 or not config2:
                 return {
@@ -445,15 +597,24 @@ class DataProcessor:
                     "details": "Configuration data missing"
                 }
             
-            # Compare running configurations
-            if "show running-config" in config1 and "show running-config" in config2:
-                config_text1 = str(config1["show running-config"])
-                config_text2 = str(config2["show running-config"])
+            # Compare all command outputs
+            for category in set(list(config1.keys()) + list(config2.keys())):
+                cat_config1 = config1.get(category, {})
+                cat_config2 = config2.get(category, {})
                 
-                if config_text1 != config_text2:
-                    # Generate detailed diff
-                    diff = self._generate_config_diff(config_text1, config_text2)
-                    changes.extend(diff)
+                for command in set(list(cat_config1.keys()) + list(cat_config2.keys())):
+                    output1 = str(cat_config1.get(command, ""))
+                    output2 = str(cat_config2.get(command, ""))
+                    
+                    if output1 != output2:
+                        if command not in cat_config1:
+                            changes.append(f"ADDED: Command '{command}' in category '{category}'")
+                        elif command not in cat_config2:
+                            changes.append(f"REMOVED: Command '{command}' in category '{category}'")
+                        else:
+                            # Generate detailed diff
+                            diff = self._generate_config_diff(output1, output2, command)
+                            changes.extend(diff)
                 
             # If no changes found
             if not changes:
@@ -483,7 +644,7 @@ class DataProcessor:
                 "details": "Comparison failed"
             }
     
-    def _generate_config_diff(self, config1: str, config2: str):
+    def _generate_config_diff(self, config1: str, config2: str, command: str = ""):
         """Generate detailed configuration diff."""
         try:
             lines1 = config1.splitlines()
@@ -494,27 +655,24 @@ class DataProcessor:
             # Generate unified diff
             diff = difflib.unified_diff(
                 lines1, lines2,
-                fromfile="Previous Config",
-                tofile="Current Config",
+                fromfile="Previous",
+                tofile="Current",
                 lineterm=""
             )
             
-            current_section = None
+            cmd_prefix = f"[{command}] " if command else ""
+            
             for line in diff:
                 if line.startswith('@@'):
                     continue
                 elif line.startswith('---') or line.startswith('+++'):
                     continue
                 elif line.startswith('-'):
-                    changes.append(f"REMOVED: {line[1:].strip()}")
+                    changes.append(f"{cmd_prefix}REMOVED: {line[1:].strip()}")
                 elif line.startswith('+'):
-                    changes.append(f"ADDED: {line[1:].strip()}")
-                elif line.startswith(' '):
-                    # Context line, can be used to track sections
-                    if line.strip().startswith('interface') or line.strip().startswith('router'):
-                        current_section = line.strip()
+                    changes.append(f"{cmd_prefix}ADDED: {line[1:].strip()}")
             
-            return changes[:50]  # Limit to first 50 changes for readability
+            return changes[:20]  # Limit to first 20 changes per command
             
         except Exception as e:
             logger.error(f"Error generating config diff: {e}")
@@ -658,16 +816,95 @@ def allowed_file(filename):
     """Check if file extension is allowed."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def validate_csv_columns(df):
+    """Validate CSV columns and provide detailed error messages."""
+    errors = []
+    warnings = []
+    
+    # Required columns and their aliases
+    required_columns = {
+        'IP MGMT': ['ip mgmt', 'ip_mgmt', 'ip', 'management ip', 'mgmt_ip', 'device_ip'],
+        'Nama SW': ['nama sw', 'nama_sw', 'name', 'hostname', 'device_name', 'switch_name'],
+        'SN': ['sn', 'serial', 'serial_number', 'serial number', 'serial_no'],
+        'Model SW': ['model sw', 'model_sw', 'model', 'device_model', 'switch_model']
+    }
+    
+    # Check for empty dataframe
+    if df.empty:
+        errors.append("CSV file is empty. Please provide a file with device information.")
+        return errors, warnings, {}
+    
+    # Map columns
+    column_mapping = {}
+    df_cols_lower = {col.lower(): col for col in df.columns}
+    
+    for req_col, aliases in required_columns.items():
+        found = False
+        for alias in [req_col.lower()] + aliases:
+            if alias in df_cols_lower:
+                column_mapping[req_col] = df_cols_lower[alias]
+                found = True
+                break
+        
+        if not found:
+            errors.append(f"Missing required column '{req_col}'. Acceptable column names: {', '.join([req_col] + [a.upper() for a in aliases])}")
+    
+    # If we have all required columns, check data quality
+    if not errors:
+        for idx, row in df.iterrows():
+            row_num = idx + 2  # Account for header row
+            
+            # Check IP address
+            ip_val = str(row[column_mapping['IP MGMT']]).strip()
+            if not ip_val or ip_val.lower() in ['nan', 'none', 'null', '']:
+                errors.append(f"Row {row_num}: Missing IP address")
+            elif not validate_ip_address(ip_val):
+                errors.append(f"Row {row_num}: Invalid IP address format '{ip_val}'")
+            
+            # Check device name
+            name_val = str(row[column_mapping['Nama SW']]).strip()
+            if not name_val or name_val.lower() in ['nan', 'none', 'null', '']:
+                warnings.append(f"Row {row_num}: Missing device name")
+            
+            # Check model
+            model_val = str(row[column_mapping['Model SW']]).strip()
+            if not model_val or model_val.lower() in ['nan', 'none', 'null', '']:
+                warnings.append(f"Row {row_num}: Missing device model - will use SSH autodetect")
+            
+            # Check serial number
+            sn_val = str(row[column_mapping['SN']]).strip()
+            if not sn_val or sn_val.lower() in ['nan', 'none', 'null', '']:
+                warnings.append(f"Row {row_num}: Missing serial number")
+    
+    return errors, warnings, column_mapping
+
+def validate_ip_address(ip_str):
+    """Validate IP address format."""
+    parts = ip_str.split('.')
+    if len(parts) != 4:
+        return False
+    
+    for part in parts:
+        try:
+            num = int(part)
+            if num < 0 or num > 255:
+                return False
+        except ValueError:
+            return False
+    
+    return True
+
 def get_csv_separator(file_path: str):
     """Detects the separator of a CSV file by checking the header."""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             header = f.readline()
-            if ';' in header:
-                logger.info("Semicolon separator detected in CSV.")
-                return ';'
-            logger.info("Comma separator assumed for CSV.")
-            return ','
+            # Count occurrences of common separators
+            separators = {',': header.count(','), ';': header.count(';'), '\t': header.count('\t'), '|': header.count('|')}
+            # Return the separator with most occurrences
+            separator = max(separators.items(), key=lambda x: x[1])[0]
+            logger.info(f"Detected CSV separator: '{separator}'")
+            return separator
     except Exception as e:
         logger.warning(f"Could not detect separator for {file_path}, defaulting to comma. Error: {e}")
         return ','
@@ -693,31 +930,23 @@ def threaded_process_devices(username: str, password: str, file_path: str, sessi
         # Strip whitespace from column names
         df.columns = [col.strip() for col in df.columns]
 
-        # Check if dataframe is empty
-        if df.empty:
-            raise ValueError("No valid device entries found in CSV file.")
-
-        # Map CSV columns to expected names (case-insensitive)
-        column_mapping = {}
-        required_aliases = {
-            'IP MGMT': ['ip mgmt', 'ip_mgmt', 'ip', 'management ip'],
-            'Nama SW': ['nama sw', 'nama_sw', 'name', 'hostname', 'device_name'],
-            'SN': ['sn', 'serial', 'serial_number', 'serial number'],
-            'Model SW': ['model sw', 'model_sw', 'model', 'device_model']
-        }
+        # Validate CSV columns and data
+        errors, warnings, column_mapping = validate_csv_columns(df)
         
-        df_cols_lower = {col.lower(): col for col in df.columns}
-
-        for req_col, aliases in required_aliases.items():
-            for alias in [req_col.lower()] + aliases:
-                if alias in df_cols_lower:
-                    column_mapping[req_col] = df_cols_lower[alias]
-                    break
+        if errors:
+            error_message = "CSV validation failed:\n" + "\n".join(errors)
+            if warnings:
+                error_message += "\n\nWarnings:\n" + "\n".join(warnings[:5])  # Show first 5 warnings
+                if len(warnings) > 5:
+                    error_message += f"\n... and {len(warnings) - 5} more warnings"
+            
+            raise ValueError(error_message)
         
-        missing_cols = [col for col in required_aliases if col not in column_mapping]
-        if missing_cols:
-            available_cols = list(df.columns)
-            raise ValueError(f"CSV must contain columns similar to: {list(required_aliases.keys())}. Missing mappings for: {missing_cols}. Available columns in file: {available_cols}")
+        # Log warnings
+        if warnings:
+            logger.warning(f"CSV validation warnings: {len(warnings)} issues found")
+            for warning in warnings[:10]:  # Log first 10 warnings
+                logger.warning(warning)
 
         # Update session with total devices
         session.total_devices = len(df)
@@ -760,7 +989,8 @@ def threaded_process_devices(username: str, password: str, file_path: str, sessi
         
         # Save results
         session.end_time = datetime.now()
-        output_filename = data_processor.save_results(results)
+        output_filename = data_processor.save_results(results, session_id)
+        session.output_file = output_filename
         
         # Prepare final response
         response = {
@@ -768,6 +998,7 @@ def threaded_process_devices(username: str, password: str, file_path: str, sessi
             "message": f"Processing complete: {session.successful} successful, {session.failed} failed. Results saved to {Path(output_filename).name}",
             "data": [asdict(result) for result in results],
             "session_id": session_id,
+            "output_file": Path(output_filename).name,
             "summary": {
                 "total": session.total_devices,
                 "successful": session.successful,
@@ -818,8 +1049,8 @@ def process_single_device_with_retry(device_info: DeviceInfo, metadata: DeviceMe
             # Update connection status
             connection_status = DEVICE_STATUS["CONNECTING"] if retry_count == 0 else DEVICE_STATUS["RETRYING"]
             
-            device_data, error, final_status = device_manager.connect_and_collect_data(
-                device_info, retry_count, session
+            device_data, error, final_status, detected_type = device_manager.connect_and_collect_data(
+                device_info, metadata.model_sw, retry_count, session
             )
             
             processing_time = (datetime.now() - start_time).total_seconds()
@@ -836,7 +1067,8 @@ def process_single_device_with_retry(device_info: DeviceInfo, metadata: DeviceMe
                     processing_time=processing_time,
                     retry_count=retry_count,
                     last_attempt=datetime.now().isoformat(),
-                    connection_status=DEVICE_STATUS["SUCCESS"]
+                    connection_status=DEVICE_STATUS["SUCCESS"],
+                    detected_device_type=detected_type
                 )
             else:
                 # Failed, check if we should retry
@@ -857,7 +1089,8 @@ def process_single_device_with_retry(device_info: DeviceInfo, metadata: DeviceMe
                         processing_time=processing_time,
                         retry_count=retry_count,
                         last_attempt=datetime.now().isoformat(),
-                        connection_status=DEVICE_STATUS["FAILED"]
+                        connection_status=DEVICE_STATUS["FAILED"],
+                        detected_device_type=detected_type
                     )
                     
         except Exception as e:
@@ -910,8 +1143,10 @@ def get_system_info():
                 "default_timeout": DEFAULT_TIMEOUT,
                 "default_retry_attempts": DEFAULT_RETRY_ATTEMPTS,
                 "output_directory": str(data_processor.output_dir),
-                "version": "2.0.0",
+                "version": "2.1.0",
                 "features": [
+                    "SSH Device Connection",
+                    "Auto Device Type Detection",
                     "Retry Mechanism",
                     "Progress Tracking", 
                     "Batch Processing",
@@ -919,7 +1154,9 @@ def get_system_info():
                     "File Comparison",
                     "Stop Functionality",
                     "Web File Upload",
-                    "Excel Export"
+                    "Excel Export",
+                    "Output File Management",
+                    "Real-time Logs"
                 ]
             }
         })
@@ -952,32 +1189,33 @@ def upload_csv():
             # Validate CSV
             try:
                 separator = get_csv_separator(filepath)
-                df = pd.read_csv(filepath, sep=separator, nrows=1)
-                df.columns = [col.strip().lower() for col in df.columns]
+                df = pd.read_csv(filepath, sep=separator)
+                df.columns = [col.strip() for col in df.columns]
                 
-                required_patterns = ['ip', 'nama', 'sn', 'model']
-                missing_patterns = []
-                for pattern in required_patterns:
-                    if not any(pattern in col for col in df.columns):
-                        missing_patterns.append(pattern)
+                # Validate columns and data
+                errors, warnings, column_mapping = validate_csv_columns(df)
                 
-                if missing_patterns:
+                if errors:
                     os.remove(filepath)  # Clean up invalid file
-                    available_cols = list(pd.read_csv(filepath, sep=separator, nrows=0).columns)
+                    error_message = "CSV validation failed:\n" + "\n".join(errors)
+                    if warnings:
+                        error_message += f"\n\nWarnings: {len(warnings)} issues found"
                     return jsonify({
                         "status": "error",
-                        "message": f"CSV must contain columns for: {missing_patterns}. Available columns: {available_cols}"
+                        "message": error_message,
+                        "errors": errors,
+                        "warnings": warnings[:10]  # Return first 10 warnings
                     }), 400
                 
                 # Count total devices
-                full_df = pd.read_csv(filepath, sep=separator)
-                device_count = len(full_df)
+                device_count = len(df)
                 
                 return jsonify({
                     "status": "success",
                     "message": f"File uploaded successfully. {device_count} devices found.",
                     "filepath": filepath,
-                    "device_count": device_count
+                    "device_count": device_count,
+                    "warnings": warnings[:10] if warnings else []
                 })
                 
             except Exception as e:
@@ -999,16 +1237,23 @@ def process_devices_from_file():
     """Start device processing with uploaded file."""
     try:
         data = request.get_json()
-        username = data.get('username', '')
-        password = data.get('password', '')
+        username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
         filepath = data.get('filepath', '')
         retry_failed_only = data.get('retry_failed_only', False)
+        
+        # Validate credentials are provided
+        if not username or not password:
+            return jsonify({
+                "status": "error",
+                "message": "Username and password are required for SSH/TACACS authentication"
+            }), 400
         
         if not filepath or not os.path.exists(filepath):
             return jsonify({
                 "status": "error",
                 "message": "No valid file found. Please upload a CSV file first."
-            })
+            }), 400
         
         # Validate CSV file again
         try:
@@ -1017,14 +1262,14 @@ def process_devices_from_file():
             device_count = len(full_df)
             
             if device_count == 0:
-                return jsonify({"status": "error", "message": "The CSV file is empty."})
+                return jsonify({"status": "error", "message": "The CSV file is empty."}), 400
                 
         except Exception as e:
             logger.error(f"Error reading CSV file: {e}")
             return jsonify({
                 "status": "error",
                 "message": f"Error reading CSV file: {str(e)}"
-            })
+            }), 400
         
         # Create new processing session
         session_id = str(uuid.uuid4())
@@ -1128,20 +1373,153 @@ def stop_processing(session_id):
             "message": f"Error stopping processing: {str(e)}"
         }), 500
 
+@app.route('/api/output_files', methods=['GET'])
+def list_output_files():
+    """List all output files."""
+    try:
+        files = data_processor.list_output_files()
+        return jsonify({
+            "status": "success",
+            "data": files,
+            "total": len(files)
+        })
+    except Exception as e:
+        logger.error(f"Error listing output files: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error listing files: {str(e)}"
+        }), 500
+
+@app.route('/api/output_files/<filename>', methods=['GET'])
+def download_output_file(filename):
+    """Download a specific output file."""
+    try:
+        filepath = os.path.join(data_processor.output_dir, filename)
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            return send_file(
+                filepath,
+                as_attachment=True,
+                download_name=filename,
+                mimetype='application/json'
+            )
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "File not found"
+            }), 404
+    except Exception as e:
+        logger.error(f"Error downloading file {filename}: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error downloading file: {str(e)}"
+        }), 500
+
+@app.route('/api/output_files/<filename>', methods=['DELETE'])
+def delete_output_file(filename):
+    """Delete a specific output file."""
+    try:
+        if data_processor.delete_output_file(filename):
+            return jsonify({
+                "status": "success",
+                "message": f"File {filename} deleted successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "File not found or could not be deleted"
+            }), 404
+    except Exception as e:
+        logger.error(f"Error deleting file {filename}: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error deleting file: {str(e)}"
+        }), 500
+
+@app.route('/api/logs', methods=['GET'])
+def get_logs():
+    """Get recent logs from memory."""
+    try:
+        logs = in_memory_handler.get_logs()
+        return jsonify({
+            "status": "success",
+            "data": logs,
+            "total": len(logs)
+        })
+    except Exception as e:
+        logger.error(f"Error getting logs: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error getting logs: {str(e)}"
+        }), 500
+
+@app.route('/api/logs/clear', methods=['POST'])
+def clear_logs():
+    """Clear logs from memory."""
+    try:
+        in_memory_handler.clear_logs()
+        return jsonify({
+            "status": "success",
+            "message": "Logs cleared successfully"
+        })
+    except Exception as e:
+        logger.error(f"Error clearing logs: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error clearing logs: {str(e)}"
+        }), 500
+
+@app.route('/api/compare_files', methods=['POST'])
+def compare_files():
+    """Compare two configuration files."""
+    try:
+        data = request.get_json()
+        file1 = data.get('file1')
+        file2 = data.get('file2')
+        
+        if not file1 or not file2:
+            return jsonify({
+                "status": "error",
+                "message": "Two files must be selected for comparison"
+            }), 400
+        
+        comparison_results = data_processor.compare_configurations(file1, file2)
+        
+        return jsonify({
+            "status": "success",
+            "data": comparison_results,
+            "file1": os.path.basename(file1),
+            "file2": os.path.basename(file2),
+            "total_devices_compared": len(comparison_results)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error comparing files: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error comparing files: {str(e)}"
+        }), 500
+
 @app.route('/api/retry_failed', methods=['POST'])
 def retry_failed_devices():
     """Retry only failed devices from previous session."""
     try:
         data = request.get_json()
-        username = data.get('username', '')
-        password = data.get('password', '')
+        username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
         previous_results = data.get('results', [])
+        
+        # Validate credentials
+        if not username or not password:
+            return jsonify({
+                "status": "error",
+                "message": "Username and password are required for SSH/TACACS authentication"
+            }), 400
         
         if not previous_results:
             return jsonify({
                 "status": "error",
                 "message": "No previous results provided for retry"
-            })
+            }), 400
         
         # Filter failed devices
         failed_devices = [device for device in previous_results if device.get('status') != 'Success']
@@ -1213,24 +1591,6 @@ def filter_results():
         return jsonify({
             "status": "error",
             "message": f"Error filtering results: {str(e)}"
-        }), 500
-
-@app.route('/api/compare_files', methods=['POST'])
-def compare_files():
-    """Compare two configuration files - Web version requires file upload."""
-    try:
-        # For web version, this would need to be modified to accept uploaded files
-        # or work with previously processed results
-        return jsonify({
-            "status": "info",
-            "message": "File comparison feature requires modification for web interface. Please use the export feature to download results and compare offline."
-        })
-        
-    except Exception as e:
-        logger.error(f"Error comparing files: {e}")
-        return jsonify({
-            "status": "error",
-            "message": f"Error comparing files: {str(e)}"
         }), 500
 
 @app.route('/api/export_excel', methods=['POST'])
@@ -1325,7 +1685,7 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "2.0.0"
+        "version": "2.1.0"
     })
 
 if __name__ == '__main__':

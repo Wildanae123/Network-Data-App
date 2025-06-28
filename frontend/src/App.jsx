@@ -26,6 +26,12 @@ import {
   Sun,
   File,
   CloudUpload,
+  FolderOpen,
+  Trash2,
+  Terminal,
+  Activity,
+  AlertCircle,
+  Info,
 } from "lucide-react";
 import "./App.css";
 
@@ -367,6 +373,30 @@ const FileUploadComponent = ({
   );
 };
 
+const FileUploadComponentWithWarnings = ({
+  onFileUpload,
+  disabled,
+  uploadedFile,
+  onFileRemove,
+}) => {
+  return (
+    <div className="file-upload-wrapper">
+      <FileUploadComponent
+        onFileUpload={onFileUpload}
+        disabled={disabled}
+        uploadedFile={uploadedFile}
+        onFileRemove={onFileRemove}
+      />
+      {uploadedFile?.warnings && uploadedFile.warnings.length > 0 && (
+        <div className="upload-warnings">
+          <AlertTriangle size={16} />
+          <span>{uploadedFile.warnings.length} warnings found in CSV</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Loading Overlay Component with Progress Bar
 const LoadingOverlay = ({ message, isVisible, apiStatus, progress }) => {
   if (!isVisible) return null;
@@ -647,6 +677,320 @@ const DeviceStatusIcon = ({ status, size = 16 }) => {
   );
 };
 
+// Output Files Manager
+const OutputFilesModal = ({ isOpen, onClose, onCompareSelect }) => {
+  const [files, setFiles] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const loadFiles = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await api.request("/output_files");
+      if (response.status === "success") {
+        setFiles(response.data || []);
+      }
+    } catch (error) {
+      console.error("Error loading files:", error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOpen) {
+      loadFiles();
+    }
+  }, [isOpen, loadFiles]);
+
+  const handleDelete = async (filename) => {
+    if (!window.confirm(`Are you sure you want to delete ${filename}?`)) return;
+
+    try {
+      const response = await api.request(`/output_files/${filename}`, {
+        method: "DELETE",
+      });
+      if (response.status === "success") {
+        loadFiles();
+      }
+    } catch (error) {
+      alert(`Error deleting file: ${error.message}`);
+    }
+  };
+
+  const handleDownload = (filename) => {
+    const url = isDevelopment
+      ? `${API_BASE_URL}/output_files/${filename}`
+      : `/api/output_files/${filename}`;
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const toggleFileSelection = (filepath) => {
+    setSelectedFiles((prev) => {
+      const newSelection = prev.includes(filepath)
+        ? prev.filter((f) => f !== filepath)
+        : [...prev, filepath];
+      return newSelection.slice(-2);
+    });
+  };
+
+  const handleCompare = () => {
+    if (selectedFiles.length === 2) {
+      onCompareSelect(selectedFiles);
+      onClose();
+    }
+  };
+
+  const filteredFiles = files.filter((file) =>
+    file.filename.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const formatFileSize = (bytes) => {
+    if (bytes < 1024) return bytes + " B";
+    else if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+    else return (bytes / 1048576).toFixed(1) + " MB";
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal-content xl-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="modal-header">
+          <h2>
+            <FolderOpen size={24} />
+            Output Files Manager
+          </h2>
+          <button className="modal-close-btn" onClick={onClose}>
+            &times;
+          </button>
+        </div>
+        <div className="modal-body">
+          <div className="file-manager-controls">
+            <div className="search-box">
+              <Search size={16} />
+              <input
+                type="text"
+                placeholder="Search files..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            {selectedFiles.length === 2 && (
+              <button className="compare-button" onClick={handleCompare}>
+                <GitCompare size={16} />
+                Compare Selected Files
+              </button>
+            )}
+            <button className="refresh-button" onClick={loadFiles}>
+              <RefreshCw size={16} />
+              Refresh
+            </button>
+          </div>
+
+          {loading ? (
+            <div className="loading-container">
+              <Loader2 size={32} className="animate-spin" />
+              <p>Loading files...</p>
+            </div>
+          ) : (
+            <div className="files-grid">
+              {filteredFiles.length === 0 ? (
+                <div className="empty-state">
+                  <FolderOpen size={48} />
+                  <p>No output files found</p>
+                </div>
+              ) : (
+                filteredFiles.map((file) => (
+                  <div
+                    key={file.filename}
+                    className={`file-card ${
+                      selectedFiles.includes(file.filepath) ? "selected" : ""
+                    }`}
+                    onClick={() => toggleFileSelection(file.filepath)}
+                  >
+                    <div className="file-icon">
+                      <File size={32} />
+                    </div>
+                    <div className="file-info">
+                      <h4>{file.filename}</h4>
+                      <p>Size: {formatFileSize(file.size)}</p>
+                      <p>
+                        Modified: {new Date(file.modified).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="file-actions">
+                      <button
+                        className="action-btn download"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDownload(file.filename);
+                        }}
+                        title="Download"
+                      >
+                        <Download size={16} />
+                      </button>
+                      <button
+                        className="action-btn delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(file.filename);
+                        }}
+                        title="Delete"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Add Logs Viewer Component
+const LogsViewer = ({ isOpen, onClose }) => {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [filterLevel, setFilterLevel] = useState("ALL");
+
+  const loadLogs = useCallback(async () => {
+    try {
+      const response = await api.request("/logs");
+      if (response.status === "success") {
+        setLogs(response.data || []);
+      }
+    } catch (error) {
+      console.error("Error loading logs:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOpen && autoRefresh) {
+      loadLogs();
+      const interval = setInterval(loadLogs, 2000);
+      return () => clearInterval(interval);
+    }
+  }, [isOpen, autoRefresh, loadLogs]);
+
+  const handleClearLogs = async () => {
+    if (!window.confirm("Are you sure you want to clear all logs?")) return;
+
+    try {
+      await api.request("/logs/clear", { method: "POST" });
+      setLogs([]);
+    } catch (error) {
+      console.error("Error clearing logs:", error);
+    }
+  };
+
+  const filteredLogs = useMemo(() => {
+    if (filterLevel === "ALL") return logs;
+    return logs.filter((log) => log.level === filterLevel);
+  }, [logs, filterLevel]);
+
+  const getLogLevelClass = (level) => {
+    switch (level) {
+      case "ERROR":
+        return "log-error";
+      case "WARNING":
+        return "log-warning";
+      case "INFO":
+        return "log-info";
+      default:
+        return "log-debug";
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal-content xl-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="modal-header">
+          <h2>
+            <Terminal size={24} />
+            System Logs
+          </h2>
+          <button className="modal-close-btn" onClick={onClose}>
+            &times;
+          </button>
+        </div>
+        <div className="modal-body">
+          <div className="logs-controls">
+            <div className="filter-group">
+              <label>Level:</label>
+              <select
+                value={filterLevel}
+                onChange={(e) => setFilterLevel(e.target.value)}
+              >
+                <option value="ALL">All Levels</option>
+                <option value="ERROR">Error</option>
+                <option value="WARNING">Warning</option>
+                <option value="INFO">Info</option>
+                <option value="DEBUG">Debug</option>
+              </select>
+            </div>
+            <label className="auto-refresh">
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+              />
+              Auto-refresh
+            </label>
+            <button className="clear-logs-btn" onClick={handleClearLogs}>
+              <Trash2 size={16} />
+              Clear Logs
+            </button>
+          </div>
+
+          <div className="logs-container">
+            {filteredLogs.length === 0 ? (
+              <div className="empty-logs">
+                <Terminal size={48} />
+                <p>No logs to display</p>
+              </div>
+            ) : (
+              <div className="logs-list">
+                {filteredLogs.map((log, index) => (
+                  <div
+                    key={index}
+                    className={`log-entry ${getLogLevelClass(log.level)}`}
+                  >
+                    <span className="log-timestamp">{log.timestamp}</span>
+                    <span className="log-level">[{log.level}]</span>
+                    <span className="log-module">{log.module}:</span>
+                    <span className="log-message">{log.message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Main App Component ---
 function App() {
   // State management
@@ -677,6 +1021,9 @@ function App() {
   const [progress, setProgress] = useState(null);
   const [canRetry, setCanRetry] = useState(false);
   const [comparisonData, setComparisonData] = useState(null);
+  const [showFileManager, setShowFileManager] = useState(false);
+  const [showLogsViewer, setShowLogsViewer] = useState(false);
+  const [comparisonFiles, setComparisonFiles] = useState(null);
 
   // Filtering state
   const [filterType, setFilterType] = useState("all");
@@ -742,7 +1089,6 @@ function App() {
       }
 
       if (file.size > 16 * 1024 * 1024) {
-        // 16MB limit
         showAlert(
           "File size too large. Maximum size is 16MB",
           ALERT_TYPES.ERROR
@@ -758,12 +1104,23 @@ function App() {
           setUploadedFile({
             name: file.name,
             deviceCount: result.device_count,
+            warnings: result.warnings || [],
           });
           setUploadedFilePath(result.filepath);
-          showAlert(result.message, ALERT_TYPES.SUCCESS);
+
+          let message = result.message;
+          if (result.warnings && result.warnings.length > 0) {
+            message += ` (${result.warnings.length} warnings found)`;
+          }
+
+          showAlert(message, ALERT_TYPES.SUCCESS);
           setMessage(MESSAGES.API_READY);
         } else {
-          showAlert(result.message || "File upload failed", ALERT_TYPES.ERROR);
+          let errorMessage = result.message || "File upload failed";
+          if (result.errors && result.errors.length > 0) {
+            errorMessage = result.errors.join("\n");
+          }
+          showAlert(errorMessage, ALERT_TYPES.ERROR);
         }
       } catch (error) {
         console.error("File upload error:", error);
@@ -1091,21 +1448,45 @@ function App() {
   );
 
   // Handler for file comparison
-  const handleCompareFiles = useCallback(async () => {
-    try {
-      const response = await api.compareFiles();
-      if (response && response.status === "success") {
-        setComparisonData(response);
-      } else {
-        showAlert(
-          response?.message || "Error comparing files",
-          ALERT_TYPES.ERROR
-        );
+  const handleCompareFiles = useCallback(
+    async (files = null) => {
+      try {
+        if (!files) {
+          setShowFileManager(true);
+          return;
+        }
+
+        const response = await api.request("/compare_files", {
+          method: "POST",
+          body: JSON.stringify({
+            file1: files[0],
+            file2: files[1],
+          }),
+        });
+
+        if (response && response.status === "success") {
+          setComparisonData(response);
+        } else {
+          showAlert(
+            response?.message || "Error comparing files",
+            ALERT_TYPES.ERROR
+          );
+        }
+      } catch (e) {
+        showAlert(`Comparison error: ${e.message || e}`, ALERT_TYPES.ERROR);
       }
-    } catch (e) {
-      showAlert(`Comparison error: ${e.message || e}`, ALERT_TYPES.ERROR);
-    }
-  }, [showAlert]);
+    },
+    [showAlert]
+  );
+
+  // Handle file comparison selection from file manager
+  const handleCompareSelect = useCallback(
+    (selectedFiles) => {
+      setComparisonFiles(selectedFiles);
+      handleCompareFiles(selectedFiles);
+    },
+    [handleCompareFiles]
+  );
 
   // Handler for exporting data to Excel
   const handleExport = useCallback(async () => {
@@ -1138,6 +1519,15 @@ function App() {
         comparisonData={comparisonData}
         onClose={() => setComparisonData(null)}
       />
+      <OutputFilesModal
+        isOpen={showFileManager}
+        onClose={() => setShowFileManager(false)}
+        onCompareSelect={handleCompareSelect}
+      />
+      <LogsViewer
+        isOpen={showLogsViewer}
+        onClose={() => setShowLogsViewer(false)}
+      />
 
       <header className="app-header">
         <div className="logo">
@@ -1165,19 +1555,35 @@ function App() {
               )}
             </div>
           )}
-          <button
-            className="dark-mode-toggle"
-            onClick={toggleDarkMode}
-            aria-label="Toggle dark mode"
-          >
-            {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
+          <div className="header-buttons">
+            <button
+              className="header-btn"
+              onClick={() => setShowFileManager(true)}
+              title="Output Files"
+            >
+              <FolderOpen size={20} />
+            </button>
+            <button
+              className="header-btn"
+              onClick={() => setShowLogsViewer(true)}
+              title="System Logs"
+            >
+              <Terminal size={20} />
+            </button>
+            <button
+              className="dark-mode-toggle"
+              onClick={toggleDarkMode}
+              aria-label="Toggle dark mode"
+            >
+              {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="main-content">
         <div className="setup-grid">
-          {/* File Upload Section - Only show in production or when PyWebView is not available */}
+          {/* File Upload Section */}
           {(!isDevelopment || !window.pywebview) && (
             <div className="card">
               <div className="card-header">
@@ -1185,15 +1591,15 @@ function App() {
                 <h3>1. Upload Device List</h3>
               </div>
               <div className="card-content">
-                <FileUploadComponent
+                <FileUploadComponentWithWarnings
                   onFileUpload={handleFileUpload}
                   disabled={isProcessing}
                   uploadedFile={uploadedFile}
                   onFileRemove={handleFileRemove}
                 />
                 <small className="upload-note">
-                  CSV file must contain columns for IP, Device Name, Serial
-                  Number, and Model
+                  CSV must contain: IP MGMT, Device Name (Nama SW), Serial
+                  Number (SN), and Model (Model SW)
                 </small>
               </div>
             </div>
@@ -1204,33 +1610,36 @@ function App() {
               <Key size={20} />
               <h3>
                 {!isDevelopment || !window.pywebview
-                  ? "2. Device Credentials"
-                  : "1. Device Credentials"}
+                  ? "2. SSH/TACACS Credentials"
+                  : "1. SSH/TACACS Credentials"}
               </h3>
             </div>
             <div className="card-content">
               <input
                 type="text"
-                placeholder="Username (optional)"
+                placeholder="Username (required)"
                 value={credentials.username}
                 onChange={(e) =>
                   setCredentials((p) => ({ ...p, username: e.target.value }))
                 }
                 className="credential-input"
                 disabled={isProcessing}
+                required
               />
               <input
                 type="password"
-                placeholder="Password (optional)"
+                placeholder="Password (required)"
                 value={credentials.password}
                 onChange={(e) =>
                   setCredentials((p) => ({ ...p, password: e.target.value }))
                 }
                 className="credential-input"
                 disabled={isProcessing}
+                required
               />
               <small className="credential-note">
-                Credentials can be provided later if needed
+                <AlertCircle size={12} />
+                Credentials are required for SSH/TACACS authentication
               </small>
             </div>
           </div>
@@ -1256,22 +1665,25 @@ function App() {
                   disabled={
                     !isApiReady ||
                     isProcessing ||
+                    !credentials.username ||
+                    !credentials.password ||
                     ((!isDevelopment || !window.pywebview) && !uploadedFilePath)
                   }
                   className="run-button primary"
                 >
-                  <Upload size={18} />
-                  {isProcessing
-                    ? MESSAGES.PROCESSING
-                    : isDevelopment && window.pywebview
-                    ? "Start & Select Device File"
-                    : "Start Processing"}
+                  <Activity size={18} />
+                  {isProcessing ? MESSAGES.PROCESSING : "Start SSH Collection"}
                 </button>
 
                 {canRetry && (
                   <button
                     onClick={() => handleRunScript(true)}
-                    disabled={!isApiReady || isProcessing}
+                    disabled={
+                      !isApiReady ||
+                      isProcessing ||
+                      !credentials.username ||
+                      !credentials.password
+                    }
                     className="run-button secondary"
                   >
                     <RefreshCw size={18} />
@@ -1289,6 +1701,13 @@ function App() {
                   </button>
                 )}
               </div>
+
+              {(!credentials.username || !credentials.password) && (
+                <div className="validation-warning">
+                  <Info size={16} />
+                  <span>Please provide both username and password</span>
+                </div>
+              )}
 
               {!isApiReady && (
                 <div className="api-status">
@@ -1346,15 +1765,20 @@ function App() {
                   >
                     <Download size={16} /> Export to Excel
                   </button>
-                  {isDevelopment && window.pywebview && (
-                    <button
-                      onClick={handleCompareFiles}
-                      className="action-button secondary"
-                      disabled={isProcessing}
-                    >
-                      <GitCompare size={16} /> Compare Files
-                    </button>
-                  )}
+                  <button
+                    onClick={() => handleCompareFiles()}
+                    className="action-button secondary"
+                    disabled={isProcessing}
+                  >
+                    <GitCompare size={16} /> Compare Files
+                  </button>
+                  <button
+                    onClick={() => setShowFileManager(true)}
+                    className="action-button secondary"
+                    disabled={isProcessing}
+                  >
+                    <FolderOpen size={16} /> Manage Files
+                  </button>
                 </div>
               </div>
             </div>
@@ -1499,6 +1923,7 @@ function App() {
                       <th>IP</th>
                       <th>Hostname</th>
                       <th>Model</th>
+                      <th>Device Type</th>
                       <th>Serial</th>
                       <th>Connection</th>
                       <th>Time (s)</th>
@@ -1528,6 +1953,11 @@ function App() {
                         <td className="ip-cell">{device.ip_mgmt || "N/A"}</td>
                         <td>{device.nama_sw || "N/A"}</td>
                         <td>{device.model_sw || "N/A"}</td>
+                        <td className="device-type-cell">
+                          <span className="device-type-badge">
+                            {device.detected_device_type || "Unknown"}
+                          </span>
+                        </td>
                         <td>{device.sn || "N/A"}</td>
                         <td>
                           <span

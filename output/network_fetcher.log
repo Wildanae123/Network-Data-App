@@ -1,0 +1,18 @@
+2025-06-28 17:55:46,738 - __main__ - INFO - Configuration loaded successfully from C:\Users\andik\OneDrive\Documents\Github\Network-Data-App\backend\commands.yaml
+2025-06-28 17:55:46,743 - __main__ - INFO - Starting Flask development server on http://localhost:5000
+2025-06-28 17:55:46,801 - werkzeug - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://localhost:5000
+2025-06-28 17:55:46,801 - werkzeug - INFO - [33mPress CTRL+C to quit[0m
+2025-06-28 17:55:46,804 - werkzeug - INFO -  * Restarting with stat
+2025-06-28 17:55:48,091 - __main__ - INFO - Configuration loaded successfully from C:\Users\andik\OneDrive\Documents\Github\Network-Data-App\backend\commands.yaml
+2025-06-28 17:55:48,097 - __main__ - INFO - Starting Flask development server on http://localhost:5000
+2025-06-28 17:55:48,114 - werkzeug - WARNING -  * Debugger is active!
+2025-06-28 17:55:48,118 - werkzeug - INFO -  * Debugger PIN: 405-640-010
+2025-06-28 17:55:48,920 - werkzeug - INFO - 127.0.0.1 - - [28/Jun/2025 17:55:48] "OPTIONS /api/system_info HTTP/1.1" 200 -
+2025-06-28 17:55:48,922 - werkzeug - INFO - 127.0.0.1 - - [28/Jun/2025 17:55:48] "OPTIONS /api/system_info HTTP/1.1" 200 -
+2025-06-28 17:55:49,164 - werkzeug - INFO - 127.0.0.1 - - [28/Jun/2025 17:55:49] "GET /api/system_info HTTP/1.1" 200 -
+2025-06-28 17:55:49,229 - werkzeug - INFO - 127.0.0.1 - - [28/Jun/2025 17:55:49] "GET /api/system_info HTTP/1.1" 200 -
+2025-06-28 17:56:18,432 - werkzeug - INFO - 127.0.0.1 - - [28/Jun/2025 17:56:18] "OPTIONS /api/system_info HTTP/1.1" 200 -
+2025-06-28 17:56:18,734 - werkzeug - INFO - 127.0.0.1 - - [28/Jun/2025 17:56:18] "OPTIONS /api/system_info HTTP/1.1" 200 -
+2025-06-28 17:56:18,737 - werkzeug - INFO - 127.0.0.1 - - [28/Jun/2025 17:56:18] "GET /api/system_info HTTP/1.1" 200 -
+2025-06-28 17:56:19,047 - werkzeug - INFO - 127.0.0.1 - - [28/Jun/2025 17:56:19] "GET /api/system_info HTTP/1.1" 200 -
