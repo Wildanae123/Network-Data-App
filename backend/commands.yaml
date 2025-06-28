@@ -1,0 +1,33 @@
+# backend/commands.yaml
+cisco_ios:
+  system_info:
+    - show version
+    - show running-config | include hostname
+  interface_status:
+    - show ip interface brief
+    - show interfaces status
+  routing:
+    - show ip route summary
+    - show ip route
+
+cisco_nxos:
+  system_info:
+    - show version
+    - show hostname
+  interface_status:
+    - show ip interface brief
+    - show interface status
+  routing:
+    - show ip route summary
+    - show ip route
+
+arista_eos:
+  system_info:
+    - show version
+    - show hostname
+  interface_status:
+    - show ip interface brief
+    - show interface status
+  routing:
+    - show ip route summary
+    - show ip route

@@ -1,0 +1,29 @@
+# Production dependencies only
+# Web Framework
+flask==3.0.0
+flask-cors==4.0.0
+gunicorn==21.2.0
+
+# Network automation
+netmiko>=4.1.0
+paramiko>=3.0.0
+
+# Data processing
+pandas>=1.5.0,<2.0.0
+numpy>=1.24.0,<2.0.0
+
+# Visualization
+plotly>=5.0.0
+
+# Configuration
+pyyaml>=6.0
+
+# File handling
+openpyxl>=3.1.0
+
+# Utilities
+python-dateutil>=2.8.0
+requests>=2.28.0
+
+# Production optimizations
+gevent>=22.0.0

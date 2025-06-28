@@ -1,0 +1,2 @@
+# Fallback requirements file
+-r requirements-prod.txt

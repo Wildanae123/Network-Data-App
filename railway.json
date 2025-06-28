@@ -1,0 +1,26 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 60,
+    "healthcheckInterval": 30
+  },
+  "environments": {
+    "production": {
+      "variables": {
+        "FLASK_ENV": "production",
+        "NODE_ENV": "production",
+        "PYTHONPATH": "/app",
+        "WEB_CONCURRENCY": "1",
+        "GUNICORN_WORKERS": "1",
+        "GUNICORN_TIMEOUT": "60",
+        "GUNICORN_KEEPALIVE": "2",
+        "MAX_REQUESTS": "100"
+      }
+    }
+  }
+}
