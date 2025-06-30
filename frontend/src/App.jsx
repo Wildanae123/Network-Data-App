@@ -1012,6 +1012,9 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [apiStatus, setApiStatus] = useState("connecting");
 
+  // API endpoint information
+  const [apiEndpoints, setApiEndpoints] = useState({});
+
   // File upload state
   const [uploadedFile, setUploadedFile] = useState(null);
   const [uploadedFilePath, setUploadedFilePath] = useState("");
@@ -1215,12 +1218,14 @@ function App() {
         setApiStatus("ready");
         setMessage("Backend connected successfully");
 
-        // Test connection
+        // Test connection and get API endpoint information
         try {
           const sysInfo = await api.getSystemInfo();
           if (sysInfo && sysInfo.status === "success") {
             setSystemInfo(sysInfo.data);
+            setApiEndpoints(sysInfo.data.api_endpoints || {});
             console.log("System info loaded successfully:", sysInfo.data);
+            console.log("API endpoints:", sysInfo.data.api_endpoints);
           }
         } catch (error) {
           console.error("Failed to connect to backend:", error);
@@ -1246,14 +1251,6 @@ function App() {
           );
           setStatus(STATUS.IDLE);
         }, 1000);
-
-        // Set up PyWebView listeners if in development mode
-        if (isDevelopment && window.pywebview) {
-          // Expose frontend functions to be called from Python
-          window.handlePythonResponse = handleBackendResponse;
-          window.setDetailData = (data) => setDetailData(data);
-          window.setAlertInfo = (alert) => showAlert(alert.message, alert.type);
-        }
       } catch (error) {
         console.error("Error initializing API:", error);
         setApiStatus("error");
@@ -1263,16 +1260,60 @@ function App() {
     };
 
     initializeApi();
-
-    return () => {
-      // Cleanup PyWebView listeners
-      if (isDevelopment && window.pywebview) {
-        delete window.handlePythonResponse;
-        delete window.setDetailData;
-        delete window.setAlertInfo;
-      }
-    };
   }, [handleBackendResponse, showAlert]);
+
+  // API Endpoint Status Component
+  const APIEndpointStatus = ({ apiEndpoints }) => {
+    if (!apiEndpoints || Object.keys(apiEndpoints).length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="card">
+        <div className="card-header">
+          <Activity size={20} />
+          <h3>Supported API Endpoints</h3>
+        </div>
+        <div className="card-content">
+          <div className="api-endpoints-grid">
+            {Object.entries(apiEndpoints).map(([deviceType, config]) => (
+              <div key={deviceType} className="api-endpoint-card">
+                <div className="endpoint-header">
+                  <h4>{deviceType.replace("_", " ").toUpperCase()}</h4>
+                  <span className={`api-type-badge ${config.api_type}`}>
+                    {config.api_type.toUpperCase()}
+                  </span>
+                </div>
+                <div className="endpoint-details">
+                  <div className="endpoint-info">
+                    <strong>Endpoint:</strong> {config.endpoint}
+                  </div>
+                  <div className="endpoint-info">
+                    <strong>Protocol:</strong> {config.protocol.toUpperCase()}
+                  </div>
+                  <div className="endpoint-info">
+                    <strong>Port:</strong> {config.port_https} (HTTPS) /{" "}
+                    {config.port_http} (HTTP)
+                  </div>
+                  <div className="endpoint-info">
+                    <strong>Content-Type:</strong> {config.content_type}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="api-info-note">
+            <Info size={16} />
+            <span>
+              This application now uses vendor APIs instead of SSH. Make sure
+              your devices have the appropriate APIs enabled (eAPI for Arista,
+              NX-API for Cisco Nexus, RESTCONF for Cisco IOS XE).
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // Effect to generate chart data when results or filter change
   useEffect(() => {
@@ -1719,6 +1760,11 @@ function App() {
           </div>
         </div>
 
+        {/* ADD THIS: API Endpoint Status Component */}
+        {systemInfo && apiEndpoints && Object.keys(apiEndpoints).length > 0 && (
+          <APIEndpointStatus apiEndpoints={apiEndpoints} />
+        )}
+
         {/* Progress Section */}
         {isProcessing && progress && (
           <div className="card">
@@ -1926,6 +1972,7 @@ function App() {
                       <th>Device Type</th>
                       <th>Serial</th>
                       <th>Connection</th>
+                      <th>API Endpoint</th>
                       <th>Time (s)</th>
                       <th>Retries</th>
                       <th>Last Attempt</th>
@@ -1965,6 +2012,27 @@ function App() {
                           >
                             {device.connection_status || "Unknown"}
                           </span>
+                        </td>
+                        <td className="api-endpoint-cell">
+                          {device.api_endpoint ? (
+                            <div className="api-endpoint-info">
+                              <div
+                                className="endpoint-url"
+                                title={device.api_endpoint}
+                              >
+                                {device.api_endpoint.length > 30
+                                  ? `${device.api_endpoint.substring(0, 30)}...`
+                                  : device.api_endpoint}
+                              </div>
+                              <div className="api-timing">
+                                {device.api_response_time
+                                  ? `${device.api_response_time.toFixed(3)}s`
+                                  : "N/A"}
+                              </div>
+                            </div>
+                          ) : (
+                            "N/A"
+                          )}
                         </td>
                         <td>{device.processing_time?.toFixed(2) ?? "N/A"}</td>
                         <td>

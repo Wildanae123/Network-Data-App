@@ -1442,6 +1442,135 @@ body {
   font-family: inherit;
 }
 
+/* API Endpoint Status Styles */
+.api-endpoints-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.api-endpoint-card {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 1rem;
+  background: var(--bg-color);
+}
+
+.endpoint-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.endpoint-header h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.api-type-badge {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.api-type-badge.json-rpc {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.api-type-badge.rest {
+  background: #e8f5e8;
+  color: #2e7d32;
+}
+
+.api-type-badge.restconf {
+  background: #fff3e0;
+  color: #f57c00;
+}
+
+.endpoint-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.endpoint-info {
+  font-size: 0.8rem;
+  display: flex;
+  justify-content: space-between;
+}
+
+.endpoint-info strong {
+  color: var(--text-color-secondary);
+  min-width: 100px;
+}
+
+.api-info-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 1rem;
+  background: var(--secondary-bg);
+  border-radius: 6px;
+  border-left: 4px solid var(--accent-color);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.api-info-note svg {
+  margin-top: 0.1rem;
+  flex-shrink: 0;
+}
+
+/* API endpoint column in results table */
+.api-endpoint-cell {
+  min-width: 200px;
+  font-size: 0.8rem;
+}
+
+.api-endpoint-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.endpoint-url {
+  font-family: monospace;
+  color: var(--text-color-secondary);
+  font-size: 0.75rem;
+}
+
+.api-timing {
+  color: var(--accent-color);
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+/* Update connection status indicator for API */
+.api-connection-status.ready::before {
+  background: #4caf50;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
 /* ===== Loading Overlay ===== */
 .loading-overlay {
   position: fixed;
