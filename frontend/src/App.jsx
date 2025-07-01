@@ -32,6 +32,7 @@ import {
   Activity,
   AlertCircle,
   Info,
+  Settings,
 } from "lucide-react";
 import "./App.css";
 
@@ -94,6 +95,17 @@ const api = {
 
     try {
       const response = await fetch(url, config);
+      const contentType = response.headers.get("content-type");
+      if (contentType && contentType.includes("text/html")) {
+        throw new Error(
+          `Server returned HTML instead of JSON. Status: ${response.status}`
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
       const data = await response.json();
       return data;
     } catch (error) {
@@ -108,6 +120,10 @@ const api = {
     } else {
       return this.request("/system_info");
     }
+  },
+
+  async getComparisonCommands() {
+    return this.request("/comparison_commands");
   },
 
   async uploadCsvFile(file) {
@@ -136,6 +152,7 @@ const api = {
     username,
     password,
     filepath = null,
+    selectedCommands = [],
     retryFailedOnly = false
   ) {
     if (isDevelopment && window.pywebview && !filepath) {
@@ -150,6 +167,7 @@ const api = {
           username,
           password,
           filepath,
+          selected_commands: selectedCommands,
           retry_failed_only: retryFailedOnly,
         }),
       });
@@ -212,6 +230,34 @@ const api = {
     }
   },
 
+  async compareSnapshots(firstFile, secondFile, commandCategory) {
+    return this.request("/compare_snapshots", {
+      method: "POST",
+      body: JSON.stringify({
+        first_file: firstFile,
+        second_file: secondFile,
+        command_category: commandCategory,
+      }),
+    });
+  },
+
+  async getOutputFiles() {
+    return this.request("/output_files");
+  },
+
+  async downloadFile(filename) {
+    const url = isDevelopment
+      ? `${API_BASE_URL}/output_files/${filename}`
+      : `/api/output_files/${filename}`;
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  },
+
   async exportToExcel(data) {
     if (isDevelopment && window.pywebview) {
       return await window.pywebview.api.export_to_excel(data);
@@ -269,6 +315,28 @@ const api = {
     } else {
       return null;
     }
+  },
+
+  // Set up log streaming
+  setupLogStream(onLogReceived) {
+    const eventSource = new EventSource(`${API_BASE_URL}/logs/stream`);
+
+    eventSource.onmessage = function (event) {
+      try {
+        const logData = JSON.parse(event.data);
+        if (logData.type !== "heartbeat") {
+          onLogReceived(logData);
+        }
+      } catch (error) {
+        console.error("Error parsing log data:", error);
+      }
+    };
+
+    eventSource.onerror = function (error) {
+      console.error("Log stream error:", error);
+    };
+
+    return eventSource;
   },
 };
 
@@ -393,6 +461,45 @@ const FileUploadComponentWithWarnings = ({
           <span>{uploadedFile.warnings.length} warnings found in CSV</span>
         </div>
       )}
+    </div>
+  );
+};
+
+// Command Selection Component
+const CommandSelectionComponent = ({
+  availableCommands,
+  selectedCommands,
+  onCommandChange,
+  disabled,
+}) => {
+  return (
+    <div className="command-selection">
+      <h4>Select Commands to Execute:</h4>
+      <div className="command-grid">
+        {Object.entries(availableCommands).map(([key, command]) => (
+          <label key={key} className="command-checkbox">
+            <input
+              type="checkbox"
+              checked={selectedCommands.includes(key)}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  onCommandChange([...selectedCommands, key]);
+                } else {
+                  onCommandChange(
+                    selectedCommands.filter((cmd) => cmd !== key)
+                  );
+                }
+              }}
+              disabled={disabled}
+            />
+            <div className="command-info">
+              <strong>{command.name}</strong>
+              <p>{command.description}</p>
+              <small>Commands: {command.commands.join(", ")}</small>
+            </div>
+          </label>
+        ))}
+      </div>
     </div>
   );
 };
@@ -862,12 +969,14 @@ const OutputFilesModal = ({ isOpen, onClose, onCompareSelect }) => {
   );
 };
 
-// Add Logs Viewer Component
+// Add Logs Viewer Component with Real-time Stream
 const LogsViewer = ({ isOpen, onClose }) => {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [filterLevel, setFilterLevel] = useState("ALL");
+  const [autoScroll, setAutoScroll] = useState(true);
+  const logsEndRef = React.useRef(null);
 
   const loadLogs = useCallback(async () => {
     try {
@@ -881,19 +990,46 @@ const LogsViewer = ({ isOpen, onClose }) => {
   }, []);
 
   useEffect(() => {
-    if (isOpen && autoRefresh) {
+    if (isOpen) {
+      // Load initial logs
       loadLogs();
-      const interval = setInterval(loadLogs, 2000);
-      return () => clearInterval(interval);
+
+      // Set up real-time streaming if available
+      if (isDevelopment) {
+        const eventSource = api.setupLogStream((logEntry) => {
+          setLogs((prev) => {
+            const newLogs = [...prev, logEntry];
+            return newLogs.slice(-1000); // Keep last 1000 logs
+          });
+        });
+
+        return () => {
+          eventSource.close();
+        };
+      } else if (autoRefresh) {
+        // Fallback to polling for production
+        const interval = setInterval(loadLogs, 2000);
+        return () => clearInterval(interval);
+      }
     }
   }, [isOpen, autoRefresh, loadLogs]);
+
+  useEffect(() => {
+    if (autoScroll && logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [logs, autoScroll]);
 
   const handleClearLogs = async () => {
     if (!window.confirm("Are you sure you want to clear all logs?")) return;
 
     try {
-      await api.request("/logs/clear", { method: "POST" });
-      setLogs([]);
+      const response = await api.request("/logs/clear", { method: "POST" });
+      if (response.status === "success") {
+        setLogs([]);
+      } else {
+        console.error("Failed to clear logs:", response.message);
+      }
     } catch (error) {
       console.error("Error clearing logs:", error);
     }
@@ -928,7 +1064,7 @@ const LogsViewer = ({ isOpen, onClose }) => {
         <div className="modal-header">
           <h2>
             <Terminal size={24} />
-            System Logs
+            System Logs {isDevelopment && "(Real-time)"}
           </h2>
           <button className="modal-close-btn" onClick={onClose}>
             &times;
@@ -949,14 +1085,26 @@ const LogsViewer = ({ isOpen, onClose }) => {
                 <option value="DEBUG">Debug</option>
               </select>
             </div>
-            <label className="auto-refresh">
-              <input
-                type="checkbox"
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
-              />
-              Auto-refresh
-            </label>
+            {!isDevelopment && (
+              <label className="auto-refresh">
+                <input
+                  type="checkbox"
+                  checked={autoRefresh}
+                  onChange={(e) => setAutoRefresh(e.target.checked)}
+                />
+                Auto-refresh
+              </label>
+            )}
+            {isDevelopment && (
+              <label className="auto-scroll">
+                <input
+                  type="checkbox"
+                  checked={autoScroll}
+                  onChange={(e) => setAutoScroll(e.target.checked)}
+                />
+                Auto-scroll
+              </label>
+            )}
             <button className="clear-logs-btn" onClick={handleClearLogs}>
               <Trash2 size={16} />
               Clear Logs
@@ -976,15 +1124,216 @@ const LogsViewer = ({ isOpen, onClose }) => {
                     key={index}
                     className={`log-entry ${getLogLevelClass(log.level)}`}
                   >
-                    <span className="log-timestamp">{log.timestamp}</span>
+                    <span className="log-timestamp">
+                      {isDevelopment
+                        ? new Date(log.timestamp).toLocaleTimeString()
+                        : log.timestamp}
+                    </span>
                     <span className="log-level">[{log.level}]</span>
                     <span className="log-module">{log.module}:</span>
                     <span className="log-message">{log.message}</span>
                   </div>
                 ))}
+                {isDevelopment && <div ref={logsEndRef} />}
               </div>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Snapshot Comparison Component
+const SnapshotComparisonModal = ({ isOpen, onClose, outputFiles }) => {
+  const [firstFile, setFirstFile] = useState("");
+  const [secondFile, setSecondFile] = useState("");
+  const [commandCategory, setCommandCategory] = useState("");
+  const [availableCommands, setAvailableCommands] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [comparisonResult, setComparisonResult] = useState(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      api.getComparisonCommands().then((response) => {
+        if (response.status === "success") {
+          setAvailableCommands(response.data);
+        }
+      });
+    }
+  }, [isOpen]);
+
+  const handleCompare = async () => {
+    if (!firstFile || !secondFile || !commandCategory) return;
+
+    setLoading(true);
+    try {
+      const result = await api.compareSnapshots(
+        firstFile,
+        secondFile,
+        commandCategory
+      );
+      if (result.status === "success") {
+        setComparisonResult(result);
+      }
+    } catch (error) {
+      console.error("Comparison failed:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  const jsonFiles = outputFiles.filter((file) =>
+    file.filename.endsWith(".json")
+  );
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal-content xl-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="modal-header">
+          <h2>
+            <GitCompare size={24} />
+            Snapshot Comparison
+          </h2>
+          <button className="modal-close-btn" onClick={onClose}>
+            &times;
+          </button>
+        </div>
+        <div className="modal-body">
+          <div className="comparison-setup">
+            <div className="file-selection">
+              <div className="file-select-group">
+                <label>First Snapshot:</label>
+                <select
+                  value={firstFile}
+                  onChange={(e) => setFirstFile(e.target.value)}
+                  disabled={loading}
+                >
+                  <option value="">Select first snapshot...</option>
+                  {jsonFiles.map((file) => (
+                    <option key={file.filename} value={file.filename}>
+                      {file.filename} (
+                      {new Date(file.modified).toLocaleString()})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="file-select-group">
+                <label>Second Snapshot:</label>
+                <select
+                  value={secondFile}
+                  onChange={(e) => setSecondFile(e.target.value)}
+                  disabled={loading}
+                >
+                  <option value="">Select second snapshot...</option>
+                  {jsonFiles.map((file) => (
+                    <option key={file.filename} value={file.filename}>
+                      {file.filename} (
+                      {new Date(file.modified).toLocaleString()})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="file-select-group">
+                <label>Command Category:</label>
+                <select
+                  value={commandCategory}
+                  onChange={(e) => setCommandCategory(e.target.value)}
+                  disabled={loading}
+                >
+                  <option value="">Select command to compare...</option>
+                  {Object.entries(availableCommands).map(([key, command]) => (
+                    <option key={key} value={key}>
+                      {command.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                className="compare-button"
+                onClick={handleCompare}
+                disabled={
+                  !firstFile || !secondFile || !commandCategory || loading
+                }
+              >
+                {loading ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <GitCompare size={16} />
+                )}
+                {loading ? "Comparing..." : "Compare Snapshots"}
+              </button>
+            </div>
+          </div>
+
+          {comparisonResult && (
+            <div className="comparison-results">
+              <h3>Comparison Results</h3>
+              <div className="comparison-summary">
+                <p>
+                  <strong>Command:</strong>{" "}
+                  {availableCommands[commandCategory]?.name}
+                </p>
+                <p>
+                  <strong>Total Devices:</strong>{" "}
+                  {comparisonResult.total_compared}
+                </p>
+                <p>
+                  <strong>Excel Export:</strong> {comparisonResult.excel_file}
+                </p>
+                <button
+                  className="download-button"
+                  onClick={() => api.downloadFile(comparisonResult.excel_file)}
+                >
+                  <Download size={16} />
+                  Download Excel Report
+                </button>
+              </div>
+
+              <div className="devices-comparison">
+                {comparisonResult.data.slice(0, 10).map((device, index) => (
+                  <div key={index} className="device-comparison">
+                    <h4>
+                      {device.ip_mgmt} - {device.hostname}
+                    </h4>
+                    <div className="comparison-status">
+                      Status:{" "}
+                      <span
+                        className={`status-${device.compare_result.status}`}
+                      >
+                        {device.compare_result.status}
+                      </span>
+                    </div>
+                    <p>{device.compare_result.summary}</p>
+                    {device.compare_result.details &&
+                      device.compare_result.details.length > 0 && (
+                        <ul className="comparison-details">
+                          {device.compare_result.details
+                            .slice(0, 5)
+                            .map((detail, idx) => (
+                              <li key={idx}>{detail}</li>
+                            ))}
+                        </ul>
+                      )}
+                  </div>
+                ))}
+                {comparisonResult.data.length > 10 && (
+                  <p>
+                    ... and {comparisonResult.data.length - 10} more devices.
+                    Download the Excel file for complete results.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1019,6 +1368,10 @@ function App() {
   const [uploadedFile, setUploadedFile] = useState(null);
   const [uploadedFilePath, setUploadedFilePath] = useState("");
 
+  // Command selection state
+  const [availableCommands, setAvailableCommands] = useState({});
+  const [selectedCommands, setSelectedCommands] = useState([]);
+
   // Processing state
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [progress, setProgress] = useState(null);
@@ -1026,7 +1379,9 @@ function App() {
   const [comparisonData, setComparisonData] = useState(null);
   const [showFileManager, setShowFileManager] = useState(false);
   const [showLogsViewer, setShowLogsViewer] = useState(false);
+  const [showComparisonModal, setShowComparisonModal] = useState(false);
   const [comparisonFiles, setComparisonFiles] = useState(null);
+  const [outputFiles, setOutputFiles] = useState([]);
 
   // Filtering state
   const [filterType, setFilterType] = useState("all");
@@ -1081,6 +1436,18 @@ function App() {
   // Callback for showing alerts
   const showAlert = useCallback((message, type = ALERT_TYPES.INFO) => {
     setAlertInfo({ message, type });
+  }, []);
+
+  // Load output files
+  const loadOutputFiles = useCallback(async () => {
+    try {
+      const response = await api.getOutputFiles();
+      if (response.status === "success") {
+        setOutputFiles(response.data);
+      }
+    } catch (error) {
+      console.error("Error loading output files:", error);
+    }
   }, []);
 
   // File upload handler
@@ -1164,6 +1531,7 @@ function App() {
         setResults(response.data);
         setFilteredResults([]);
         setCanRetry(response.data.some((device) => device.status === "Failed"));
+        loadOutputFiles(); // Refresh output files list
       }
 
       if (
@@ -1173,7 +1541,7 @@ function App() {
         showAlert(response.message, response.status);
       }
     },
-    [showAlert]
+    [showAlert, loadOutputFiles]
   );
 
   // Effect to check processing status
@@ -1220,12 +1588,23 @@ function App() {
 
         // Test connection and get API endpoint information
         try {
-          const sysInfo = await api.getSystemInfo();
+          const [sysInfo, cmdInfo] = await Promise.all([
+            api.getSystemInfo(),
+            api.getComparisonCommands(),
+          ]);
+
           if (sysInfo && sysInfo.status === "success") {
             setSystemInfo(sysInfo.data);
             setApiEndpoints(sysInfo.data.api_endpoints || {});
             console.log("System info loaded successfully:", sysInfo.data);
             console.log("API endpoints:", sysInfo.data.api_endpoints);
+          }
+
+          if (cmdInfo && cmdInfo.status === "success") {
+            setAvailableCommands(cmdInfo.data);
+            // Select all commands by default
+            setSelectedCommands(Object.keys(cmdInfo.data));
+            console.log("Comparison commands loaded:", cmdInfo.data);
           }
         } catch (error) {
           console.error("Failed to connect to backend:", error);
@@ -1261,6 +1640,13 @@ function App() {
 
     initializeApi();
   }, [handleBackendResponse, showAlert]);
+
+  // Load output files when API is ready
+  useEffect(() => {
+    if (isApiReady) {
+      loadOutputFiles();
+    }
+  }, [isApiReady, loadOutputFiles]);
 
   // API Endpoint Status Component
   const APIEndpointStatus = ({ apiEndpoints }) => {
@@ -1301,14 +1687,6 @@ function App() {
                 </div>
               </div>
             ))}
-          </div>
-          <div className="api-info-note">
-            <Info size={16} />
-            <span>
-              This application now uses vendor APIs instead of SSH. Make sure
-              your devices have the appropriate APIs enabled (eAPI for Arista,
-              NX-API for Cisco Nexus, RESTCONF for Cisco IOS XE).
-            </span>
           </div>
         </div>
       </div>
@@ -1364,10 +1742,16 @@ function App() {
       }
 
       if (!credentials.username.trim() || !credentials.password.trim()) {
+        showAlert("Username and password are required", ALERT_TYPES.ERROR);
+        return;
+      }
+
+      if (selectedCommands.length === 0) {
         showAlert(
-          "Warning: Username or password is empty. This may cause connection failures.",
-          ALERT_TYPES.WARNING
+          "Please select at least one command to execute",
+          ALERT_TYPES.ERROR
         );
+        return;
       }
 
       setMessage(
@@ -1401,6 +1785,7 @@ function App() {
             credentials.username,
             credentials.password,
             uploadedFilePath,
+            selectedCommands,
             retryFailedOnly
           );
         }
@@ -1441,7 +1826,14 @@ function App() {
         setProgress(null);
       }
     },
-    [isApiReady, credentials, showAlert, results, uploadedFilePath]
+    [
+      isApiReady,
+      credentials,
+      showAlert,
+      results,
+      uploadedFilePath,
+      selectedCommands,
+    ]
   );
 
   // Handler to stop processing
@@ -1569,12 +1961,17 @@ function App() {
         isOpen={showLogsViewer}
         onClose={() => setShowLogsViewer(false)}
       />
+      <SnapshotComparisonModal
+        isOpen={showComparisonModal}
+        onClose={() => setShowComparisonModal(false)}
+        outputFiles={outputFiles}
+      />
 
       <header className="app-header">
         <div className="logo">
           <Server size={40} className="logo-icon" />
           <div>
-            <h1>Network Data App</h1>
+            <h1>Network Data App{isDevelopment && " (Dev)"}</h1>
             <p>Automated data collection from network devices</p>
           </div>
         </div>
@@ -1651,8 +2048,8 @@ function App() {
               <Key size={20} />
               <h3>
                 {!isDevelopment || !window.pywebview
-                  ? "2. SSH/TACACS Credentials"
-                  : "1. SSH/TACACS Credentials"}
+                  ? "2. Authentication Credentials"
+                  : "1. Authentication Credentials"}
               </h3>
             </div>
             <div className="card-content">
@@ -1680,8 +2077,32 @@ function App() {
               />
               <small className="credential-note">
                 <AlertCircle size={12} />
-                Credentials are required for SSH/TACACS authentication
+                Credentials are required for API authentication
               </small>
+            </div>
+          </div>
+
+          {/* Command Selection */}
+          <div className="card">
+            <div className="card-header">
+              <Settings size={20} />
+              <h3>
+                {!isDevelopment || !window.pywebview
+                  ? "3. Select Commands"
+                  : "2. Select Commands"}
+              </h3>
+            </div>
+            <div className="card-content">
+              {Object.keys(availableCommands).length > 0 ? (
+                <CommandSelectionComponent
+                  availableCommands={availableCommands}
+                  selectedCommands={selectedCommands}
+                  onCommandChange={setSelectedCommands}
+                  disabled={isProcessing}
+                />
+              ) : (
+                <p>Loading available commands...</p>
+              )}
             </div>
           </div>
 
@@ -1690,15 +2111,15 @@ function App() {
               <Play size={20} />
               <h3>
                 {!isDevelopment || !window.pywebview
-                  ? "3. Run Process"
-                  : "2. Run Process"}
+                  ? "4. Run Process"
+                  : "3. Run Process"}
               </h3>
             </div>
             <div className="card-content">
               <p className="start-description">
                 {isDevelopment && window.pywebview
                   ? "Click Start to open the file dialog and begin processing the devices from your CSV list."
-                  : "Upload your device list CSV file and click Start to begin processing."}
+                  : "Upload your device list CSV file, select commands, and click Start to begin processing."}
               </p>
               <div className="button-group">
                 <button
@@ -1708,12 +2129,14 @@ function App() {
                     isProcessing ||
                     !credentials.username ||
                     !credentials.password ||
-                    ((!isDevelopment || !window.pywebview) && !uploadedFilePath)
+                    ((!isDevelopment || !window.pywebview) &&
+                      !uploadedFilePath) ||
+                    selectedCommands.length === 0
                   }
                   className="run-button primary"
                 >
                   <Activity size={18} />
-                  {isProcessing ? MESSAGES.PROCESSING : "Start SSH Collection"}
+                  {isProcessing ? MESSAGES.PROCESSING : "Start API Collection"}
                 </button>
 
                 {canRetry && (
@@ -1750,6 +2173,13 @@ function App() {
                 </div>
               )}
 
+              {selectedCommands.length === 0 && (
+                <div className="validation-warning">
+                  <Info size={16} />
+                  <span>Please select at least one command</span>
+                </div>
+              )}
+
               {!isApiReady && (
                 <div className="api-status">
                   <Loader2 size={16} className="animate-spin" />
@@ -1760,7 +2190,7 @@ function App() {
           </div>
         </div>
 
-        {/* ADD THIS: API Endpoint Status Component */}
+        {/* API Endpoint Status Component */}
         {systemInfo && apiEndpoints && Object.keys(apiEndpoints).length > 0 && (
           <APIEndpointStatus apiEndpoints={apiEndpoints} />
         )}
@@ -1812,18 +2242,21 @@ function App() {
                     <Download size={16} /> Export to Excel
                   </button>
                   <button
+                    onClick={() => {
+                      setShowComparisonModal(true);
+                      loadOutputFiles();
+                    }}
+                    className="action-button secondary"
+                    disabled={isProcessing}
+                  >
+                    <GitCompare size={16} /> Compare Snapshots
+                  </button>
+                  <button
                     onClick={() => handleCompareFiles()}
                     className="action-button secondary"
                     disabled={isProcessing}
                   >
                     <GitCompare size={16} /> Compare Files
-                  </button>
-                  <button
-                    onClick={() => setShowFileManager(true)}
-                    className="action-button secondary"
-                    disabled={isProcessing}
-                  >
-                    <FolderOpen size={16} /> Manage Files
                   </button>
                 </div>
               </div>
@@ -1969,13 +2402,8 @@ function App() {
                       <th>IP</th>
                       <th>Hostname</th>
                       <th>Model</th>
-                      <th>Device Type</th>
                       <th>Serial</th>
-                      <th>Connection</th>
-                      <th>API Endpoint</th>
                       <th>Time (s)</th>
-                      <th>Retries</th>
-                      <th>Last Attempt</th>
                       <th>Details</th>
                     </tr>
                   </thead>
@@ -2000,56 +2428,8 @@ function App() {
                         <td className="ip-cell">{device.ip_mgmt || "N/A"}</td>
                         <td>{device.nama_sw || "N/A"}</td>
                         <td>{device.model_sw || "N/A"}</td>
-                        <td className="device-type-cell">
-                          <span className="device-type-badge">
-                            {device.detected_device_type || "Unknown"}
-                          </span>
-                        </td>
                         <td>{device.sn || "N/A"}</td>
-                        <td>
-                          <span
-                            className={`connection-status ${device.connection_status}`}
-                          >
-                            {device.connection_status || "Unknown"}
-                          </span>
-                        </td>
-                        <td className="api-endpoint-cell">
-                          {device.api_endpoint ? (
-                            <div className="api-endpoint-info">
-                              <div
-                                className="endpoint-url"
-                                title={device.api_endpoint}
-                              >
-                                {device.api_endpoint.length > 30
-                                  ? `${device.api_endpoint.substring(0, 30)}...`
-                                  : device.api_endpoint}
-                              </div>
-                              <div className="api-timing">
-                                {device.api_response_time
-                                  ? `${device.api_response_time.toFixed(3)}s`
-                                  : "N/A"}
-                              </div>
-                            </div>
-                          ) : (
-                            "N/A"
-                          )}
-                        </td>
                         <td>{device.processing_time?.toFixed(2) ?? "N/A"}</td>
-                        <td>
-                          {device.retry_count > 0 ? (
-                            <span className="retry-count">
-                              <RefreshCw size={12} />
-                              {device.retry_count}
-                            </span>
-                          ) : (
-                            "0"
-                          )}
-                        </td>
-                        <td className="timestamp-cell">
-                          {device.last_attempt
-                            ? new Date(device.last_attempt).toLocaleString()
-                            : "N/A"}
-                        </td>
                         <td className="details-cell">
                           {device.status === "Success" ? (
                             <button

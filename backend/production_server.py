@@ -1,7 +1,5 @@
 # backend/production_server.py
 
-# backend/production_server.py
-
 import os
 import json
 import threading

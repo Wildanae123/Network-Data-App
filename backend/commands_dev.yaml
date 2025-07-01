@@ -1,0 +1,13 @@
+arista_eos:
+  mac_address_table:
+    - show mac address-table
+  ip_arp:
+    - show ip arp
+  interfaces_status:
+    - show interfaces status
+  mlag_interfaces:
+    - show mlag interfaces detail
+  system_info:
+    - show version
+    - show hostname
+    - show inventory

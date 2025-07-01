@@ -57,9 +57,9 @@ if not exist "venv" (
     )
 )
 
-REM Install backend dependencies
+REM Install backend dependencies with jsonrpclib
 echo Installing backend dependencies...
-venv\Scripts\pip.exe install flask flask-cors netmiko pandas plotly pyyaml openpyxl pywebview
+venv\Scripts\pip.exe install flask flask-cors pandas plotly pyyaml openpyxl pywebview jsonrpclib-pelix urllib3
 if errorlevel 1 (
     echo ERROR: Backend dependency installation failed!
     pause
