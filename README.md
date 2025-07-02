@@ -72,10 +72,10 @@ urllib3>=2.0.0
 ### Quick Setup (Recommended)
 
 1. **Clone or Download** the project to your local machine
-2. **Run the build script** for a standalone executable:
+2. **Install dependencies** using the provided batch script:
 
    ```bash
-   # Start bat file to install both frontend and backend dependencies
+   # Install both frontend and backend dependencies
    INSTALL.bat
    ```
 
@@ -96,7 +96,7 @@ venv\Scripts\activate
 source venv/bin/activate
 
 # Install dependencies
-pip install -r requirements.txt
+pip install flask>=3.0.0 flask-cors>=4.0.0 requests>=2.31.0 pandas>=2.1.0 numpy>=1.25.0 plotly>=5.17.0 pyyaml>=6.0.1 jsonrpclib-pelix>=0.4.3.2 openpyxl>=3.1.2 werkzeug>=3.0.0 urllib3>=2.0.7
 ```
 
 #### 2. Frontend Setup (Development Mode Only)
@@ -135,10 +135,7 @@ arista_eos:
    ```csv
    IP MGMT,Nama SW,SN,Model SW
    192.168.1.1,Switch-Core-01,ABC123456789,DCS-7050QX-32
-   192.168.1.2,Switch-Access-01,DEF987654321,DCS-7048T-A
-   192.168.1.3,Switch-Spine-01,GHI456789123,DCS-7280CR3-32P6
-   10.0.0.1,Switch-Leaf-01,JKL789123456,DCS-7050CX3-32S
-   172.16.1.10,Switch-Border-01,MNO345678901,DCS-7280CR3-32D4
+   192.168.1.2,Switch-Access-01,DEF987654321,DCS-7020R-32
    ```
 
 2. **Required CSV Columns:**
@@ -156,42 +153,59 @@ arista_eos:
 
 ### Step 2: Start the Application
 
-#### Development Mode
+#### Option A:Development Mode
 
 ```bash
-# Start both frontend and backend
+# Start both frontend and backend servers
 START-HERE.bat
 
-# The application will open two windows:
+# This will open:
 # - Frontend: http://localhost:5173
 # - Backend: http://localhost:5000
+# - Automatically open your browser
 ```
 
-#### Production Mode (Standalone)
+#### Option B: Standalone Mode (Recommended)
 
 ```bash
-# Run the built executable
-./dist/NetworkDataApp.exe
+# Run the standalone executable
+RUN-BUILD.bat
+# OR directly:
+dist\NetworkDataApp.exe
+
+# This will:
+# - Start the integrated application
+# - Automatically open your browser to the interface
+# - Run as a single process
 ```
 
-## Usage Guide
+### Step 3: Configure API Access
 
-### Basic Workflow
+1. **Open the application** in your browser
+2. **Enter API credentials:**
+   - Username: Your device API username
+   - Password: Your device API password
 
-#### 1. Upload Device List
+**Note:** The application uses vendor APIs (eAPI for Arista) instead of SSH
+
+3. **Select commands to execute:**
+   - Choose from available command categories
+   - Default selections include system info, interfaces, MAC tables, etc.
+
+### Step 4: Upload Device List
 
 1. **Click "Upload CSV File"** or drag and drop your device list
 2. **Review warnings** if any column issues are detected
 3. **Verify device count** matches your expectations
 
-#### 2. Configure Authentication
+### Step 5: Configure Authentication
 
 1. **Enter API credentials:**
    - Username: Your device username
    - Password: Your device password
 2. **These credentials** will be used for all devices in the list
 
-#### 3. Select Commands
+### Step 6: Select Commands
 
 1. **Choose commands to execute** from the available options:
 
@@ -203,7 +217,7 @@ START-HERE.bat
 
 2. **All commands selected by default** - uncheck to exclude specific commands
 
-#### 4. Start Processing
+### Step 7: Start Processing
 
 1. **Click "Start API Collection"**
 2. **Monitor real-time progress:**
@@ -212,7 +226,7 @@ START-HERE.bat
    - Individual device status updates
    - Processing speed metrics
 
-#### 5. Review Results
+### Step 8: Review Results
 
 1. **Check the results table** for:
 
@@ -223,6 +237,11 @@ START-HERE.bat
 
 2. **View detailed data** by clicking "View" for successful devices
 3. **Export results** to Excel for further analysis
+4. **Compare snapshots:**
+   - Select two different collection runs
+   - Choose command category to compare
+   - View detailed change analysis
+   - Export comparison reports
 
 ### Advanced Usage
 
@@ -815,12 +834,11 @@ network-data-app/
 │   └── *.csv                   # Placeholder for CSV files, which likely contain lists of network devices for the application to process.
 ├── .gitignore                  # Specifies intentionally untracked files and directories that Git should ignore.
 ├── .railwayignore              # Similar to `.gitignore`, but specifically for Railway deployment to exclude certain files.
-├── BUILD.bat                   # A Windows batch script to trigger the build process for the application.
 ├── Dockerfile                  # Defines the steps to build a Docker image for containerizing the application (optional for deployment).
 ├── INSTALL.bat                 # A Windows batch script for installing necessary dependencies or setting up the application.
 ├── LICENSE                     # Contains the licensing information for the project.
 ├── railway.json                # Configuration file for deploying the application on Railway, a platform as a service.
 ├── README.md                   # Provides general information about the project, setup instructions, and usage details.
-├── RUN.bat                     # A Windows batch script to run the application after it has been built or installed.
+├── RUN-BUILD.bat               # This Windows batch script automates the build process and then launches the application once it's built or installed.
 └── START-HERE.bat              # A convenience script for new users to quickly get started with the application.
 ```

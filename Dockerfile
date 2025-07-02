@@ -59,7 +59,7 @@ RUN chmod -R 755 backend/ && \
     chmod 644 backend/production_server.py
 
 # Copy and set up startup script
-COPY start.sh ./
+COPY required/start.sh ./
 RUN chmod +x start.sh
 
 # Use startup script

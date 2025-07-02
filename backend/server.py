@@ -14,7 +14,8 @@ import time
 import uuid
 import requests
 import ssl
-
+import webbrowser
+import threading
 import urllib3
 import tempfile
 import io
@@ -1724,15 +1725,26 @@ def health_check():
         "output_directory": str(data_processor.output_dir)
     })
 
+def open_browser():
+    """Open browser after a short delay to ensure server is ready."""
+    import time
+    time.sleep(1.5)
+    webbrowser.open('http://127.0.0.1:5000')
+
 if __name__ == '__main__':
     # Start log streaming automatically
-    logger.info("Starting Network Data App Server")
+    logger.info("Starting Network Data App Production Server")
     logger.info(f"Output directory: {DEFAULT_OUTPUT_DIR}")
     logger.info(f"Upload directory: {UPLOAD_FOLDER}")
     logger.info(f"Supported API endpoints: {list(API_ENDPOINTS.keys())}")
     logger.info(f"Available comparison commands: {list(ARISTA_COMPARISON_COMMANDS.keys())}")
     
-    # Development server configuration
+    # Open browser in a separate thread
+    browser_thread = threading.Thread(target=open_browser)
+    browser_thread.daemon = True
+    browser_thread.start()
+    
+    # Production server configuration
     app.run(
         host='127.0.0.1',
         port=5000,
