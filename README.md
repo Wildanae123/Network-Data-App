@@ -75,7 +75,8 @@ urllib3>=2.0.0
 2. **Run the build script** for a standalone executable:
 
    ```bash
-   python build_standalone.py
+   # Start bat file to install both frontend and backend dependencies
+   INSTALL.bat
    ```
 
 ### Manual Development Setup
@@ -107,7 +108,7 @@ npm install
 
 #### 3. Configuration Setup
 
-The application comes with a default commands_dev.yaml file. You can customize it:
+The application comes with a default commands.yaml file. You can customize it:
 
 ```yaml
 arista_eos:
@@ -350,7 +351,7 @@ The application automatically detects and configures API endpoints:
 
 ### Custom Commands
 
-Edit `backend/commands_dev.yaml` to customize commands:
+Edit `backend/commands.yaml` to customize commands:
 
 ```yaml
 arista_eos:
@@ -399,7 +400,7 @@ netstat -an | findstr :5000
 
 # Restart backend server
 cd backend
-python dev_server.py
+python server.py
 
 # Check Windows Firewall settings
 # Allow Python through Windows Firewall
@@ -460,7 +461,7 @@ python dev_server.py
 **Enable debug logging:**
 
 ```python
-# In dev_server.py, change log level
+# In server.py, change log level
 logging.basicConfig(level=logging.DEBUG)
 ```
 
@@ -782,21 +783,44 @@ netstat -i
 
 ```
 network-data-app/
-├── frontend/                # React frontend application
-│   ├── src/
-│   │   ├── App.jsx          # Main application component
-│   │   ├── main.jsx         # Entry point
-│   │   └── App.css          # Styling
-│   ├── package.json         # Frontend dependencies
-│   └── dist/                # Built files (after npm run build)
-├── backend/                 # Python backend application
-│   ├── dev_server.py        # Development Flask server
-│   ├── commands_dev.yaml    # Device command configuration
-│   ├── logs/                # Application logs
-│   ├── output/              # Generated reports and exports
-│   └── uploads/             # Uploaded CSV files
-├── dist/                    # Built executable (after build)
-├── build_standalone.py      # Executable build script
-├── requirements.txt         # Python dependencies
-└── README.md               # This documentation
+├── backend/                    # Python backend application
+│   ├── commands.yaml           # Configuration file defining network device commands to be executed.
+│   ├── server.py               # The core Flask server application, providing RESTful API endpoints for frontend interaction and data processing.
+│   └── test_connection.py      # A utility script used for testing SSL-bypassed network connections, likely for debugging or specific network setups.
+├── dist/                       # Contains the built, production-ready output of the application.
+│   ├── index.html              # The main HTML file for the deployed frontend application.
+│   └── NetworkDataApp.exe      # The standalone Windows executable for the entire application (frontend and backend bundled).
+├── frontend/                   # The React-based user interface application.
+│   ├── assets/                 # Stores static assets like images, fonts, or other media used by the frontend.
+│   ├── src/                    # Source code for the React application.
+│   │   ├── App.css             # Contains CSS rules for styling the main application components.
+│   │   ├── App.jsx             # The primary React component that orchestrates the entire user interface.
+│   │   └── main.jsx            # The entry point for the React application, responsible for rendering the `App` component.
+│   ├── eslint.config.js        # Configuration file for ESLint, used for static code analysis and enforcing coding standards.
+│   ├── index.html              # The base HTML file for the frontend development environment.
+│   ├── package-lock.json       # Automatically generated file detailing the exact versions of all frontend dependencies.
+│   ├── package.json            # Defines project metadata and lists all direct frontend dependencies.
+│   └── vite.config.js          # Configuration file for Vite, a fast build tool for modern web projects.
+├── logs/                       # Stores application logs. (gitignored)
+├── output/                     # Contains generated output files. (gitignored)
+│   ├── network_fetcher_dev.log # A log file specifically for the network data fetching process during development.
+│   ├── NetworkDataApp.spec     # A PyInstaller specification file, used to configure how the Python application is bundled into an executable.
+│   ├── requirements.txt        # Lists all Python dependencies required for the backend application and the build process.
+│   ├── *.json                  # Placeholder for JSON files, which represent snapshots of fetched network device data.
+│   └── *.xlsx                  # Placeholder for Excel files, likely containing reports from comparisons or analysis of network data.
+├── required/                   # Essential scripts for building and starting the application.
+│   ├── build_standalone.py     # A Python script responsible for initiating the process of building the standalone executable.
+│   └── start.sh                # A shell script for starting the application, typically used in Linux/macOS environments.
+├── uploads/                    # Directory for storing user-uploaded files, such as CSV lists of network devices. (gitignored)
+│   └── *.csv                   # Placeholder for CSV files, which likely contain lists of network devices for the application to process.
+├── .gitignore                  # Specifies intentionally untracked files and directories that Git should ignore.
+├── .railwayignore              # Similar to `.gitignore`, but specifically for Railway deployment to exclude certain files.
+├── BUILD.bat                   # A Windows batch script to trigger the build process for the application.
+├── Dockerfile                  # Defines the steps to build a Docker image for containerizing the application (optional for deployment).
+├── INSTALL.bat                 # A Windows batch script for installing necessary dependencies or setting up the application.
+├── LICENSE                     # Contains the licensing information for the project.
+├── railway.json                # Configuration file for deploying the application on Railway, a platform as a service.
+├── README.md                   # Provides general information about the project, setup instructions, and usage details.
+├── RUN.bat                     # A Windows batch script to run the application after it has been built or installed.
+└── START-HERE.bat              # A convenience script for new users to quickly get started with the application.
 ```

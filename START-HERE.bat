@@ -20,10 +20,10 @@ if not exist "backend\venv\Scripts\python.exe" (
 )
 
 REM Check if backend server exists
-if not exist "backend\dev_server.py" (
+if not exist "backend\server.py" (
     echo ERROR: backend server not found!
     echo.
-    echo Please ensure dev_server.py is in the backend folder.
+    echo Please ensure server.py is in the backend folder.
     echo.
     pause
     exit /b 1
@@ -68,7 +68,7 @@ echo Waiting for frontend to initialize...
 timeout /t 8 /nobreak >nul
 
 echo Starting Backend Development Server...
-START "Backend (Flask)" cmd /c "cd backend && echo Starting Flask Server... && venv\Scripts\python.exe dev_server.py && echo. && echo Backend server stopped. && pause"
+START "Backend (Flask)" cmd /c "cd backend && echo Starting Flask Server... && venv\Scripts\python.exe server.py && echo. && echo Backend server stopped. && pause"
 
 REM Wait for backend to start
 echo Waiting for backend to initialize...

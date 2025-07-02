@@ -23,17 +23,8 @@ WORKDIR /app
 # Copy requirements files
 COPY requirements*.txt ./
 
-# Install Python dependencies based on environment
-RUN if [ "${RAILWAY_ENVIRONMENT_NAME:-production}" = "production" ] && [ -f "requirements-prod.txt" ]; then \
-    echo "Installing production dependencies..." && \
-    pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements-prod.txt; \
-    elif [ -f "requirements-dev.txt" ] && [ "${RAILWAY_ENVIRONMENT_NAME:-}" != "production" ]; then \
-    echo "Installing development dependencies..." && \
-    pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements-dev.txt; \
-    else \
-    echo "Installing default dependencies..." && \
+# Install Python dependencies
+RUN echo "Installing production dependencies..." && \
     pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt; \
     fi
@@ -55,7 +46,7 @@ RUN cd frontend && \
     ls -la dist/
 
 # Create necessary directories
-RUN mkdir -p backend/uploads output logs && \
+RUN mkdir -p uploads output logs && \
     echo "Created necessary directories"
 
 # Verify backend can import

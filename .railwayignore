@@ -25,5 +25,3 @@ README.md
 docs/
 tests/
 .env_
-backend/uploads/\*
-!backend/uploads/.gitkeep

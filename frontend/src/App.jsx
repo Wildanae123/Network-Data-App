@@ -194,7 +194,6 @@ const api = {
 
   async retryFailedDevices(username, password, results) {
     if (isDevelopment && window.pywebview) {
-      // PyWebView implementation would go here
       return null;
     } else {
       return this.request("/retry_failed", {
@@ -206,7 +205,6 @@ const api = {
 
   async filterResults(results, filterType, filterValue) {
     if (isDevelopment && window.pywebview) {
-      // Local filtering for PyWebView mode
       return { status: "success", data: results };
     } else {
       return this.request("/filter_results", {
@@ -999,7 +997,7 @@ const LogsViewer = ({ isOpen, onClose }) => {
         const eventSource = api.setupLogStream((logEntry) => {
           setLogs((prev) => {
             const newLogs = [...prev, logEntry];
-            return newLogs.slice(-1000); // Keep last 1000 logs
+            return newLogs.slice(-1000);
           });
         });
 
@@ -1531,7 +1529,7 @@ function App() {
         setResults(response.data);
         setFilteredResults([]);
         setCanRetry(response.data.some((device) => device.status === "Failed"));
-        loadOutputFiles(); // Refresh output files list
+        loadOutputFiles();
       }
 
       if (
@@ -1569,7 +1567,7 @@ function App() {
           setProgress(null);
           showAlert("Error checking processing status", ALERT_TYPES.ERROR);
         }
-      }, 2000); // Check every 2 seconds
+      }, 2000);
     }
 
     return () => {
@@ -1602,7 +1600,6 @@ function App() {
 
           if (cmdInfo && cmdInfo.status === "success") {
             setAvailableCommands(cmdInfo.data);
-            // Select all commands by default
             setSelectedCommands(Object.keys(cmdInfo.data));
             console.log("Comparison commands loaded:", cmdInfo.data);
           }
