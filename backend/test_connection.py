@@ -6,172 +6,107 @@ Simple test script to verify Arista eAPI connection using jsonrpclib with SSL by
 import ssl
 import socket
 import urllib3
+import getpass
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
 
-# Disable SSL warnings for self-signed certificates
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# Create unverified SSL context for bypassing certificate verification
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
 
 try:
     from jsonrpclib import Server
-    from jsonrpclib.jsonrpc import ServerProxy, SafeTransport
 except ImportError:
-    print("Installing jsonrpclib-pelix...")
+    print("Menginstal jsonrpclib-pelix...")
     import subprocess
     import sys
-    subprocess.run([sys.executable, "-m", "pip", "install", "jsonrpclib-pelix"])
-    from jsonrpclib import Server
-    from jsonrpclib.jsonrpc import ServerProxy, SafeTransport
-
-class SSLBypassTransport(SafeTransport):
-    """Custom transport that bypasses SSL certificate verification"""
-    
-    def __init__(self, timeout=30):
-        super().__init__()
-        self.timeout = timeout
-    
-    def make_connection(self, host):
-        """Create HTTPS connection that ignores SSL certificates"""
-        try:
-            # Try Python 3 approach first
-            import http.client
-            connection = http.client.HTTPSConnection(
-                host,
-                context=ssl_context,
-                timeout=self.timeout
-            )
-            return connection
-        except ImportError:
-            # Fallback for Python 2
-            import httplib
-            connection = httplib.HTTPSConnection(
-                host,
-                timeout=self.timeout
-            )
-            # Monkey patch to use our SSL context
-            if hasattr(connection, 'sock') and connection.sock:
-                connection.sock = ssl_context.wrap_socket(
-                    connection.sock,
-                    server_hostname=host
-                )
-            return connection
-
-def create_ssl_bypass_server(url, timeout=30):
-    """Create a jsonrpc server with SSL bypass"""
     try:
-        # Create custom transport
-        transport = SSLBypassTransport(timeout=timeout)
-        
-        # Create server with custom transport
-        server = ServerProxy(
-            url,
-            transport=transport,
-            verbose=False
-        )
-        
-        return server
-    except Exception as e:
-        print(f"Error creating SSL bypass server: {e}")
-        # Fallback to regular server
-        return Server(url)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "jsonrpclib-pelix"])
+        from jsonrpclib import Server
+    except subprocess.CalledProcessError as e:
+        print(f"Gagal menginstal jsonrpclib-pelix. Error: {e}")
+        print("Silakan instal manual: pip install jsonrpclib-pelix")
+        sys.exit(1)
 
 def test_arista_connection():
-    """Test connection to Arista device with SSL bypass"""
-    
-    # Get connection details from user
-    host = input("Enter Arista device IP: ")
-    username = input("Enter username: ")
-    password = input("Enter password: ")
-    
-    # Use HTTPS with default port (443)
+    """Menguji koneksi ke perangkat Arista dengan bypass SSL."""
+
+    # Ambil detail koneksi dari pengguna
+    host = input("Masukkan IP perangkat Arista: ")
+    username = input("Masukkan username: ")
+    # Gunakan getpass agar password tidak terlihat saat diketik
+    password = getpass.getpass("Masukkan password: ")
+
     protocol = "https"
-    
-    # Create the connection URL
     url = f"{protocol}://{username}:{password}@{host}/command-api"
-    
-    print(f"\nTesting connection to: {host}")
-    print(f"Protocol: {protocol.upper()} (default port 443)")
-    print(f"URL format: {protocol}://username:password@host/command-api")
-    
-    print("🔓 SSL certificate verification: DISABLED")
-    
+
+    print(f"\nMenguji koneksi ke: {host}")
+    print(f"Protokol: {protocol.upper()} (port default 443)")
+    print("🔓 Verifikasi sertifikat SSL: DINONAKTIFKAN (Metode Global)")
+
     try:
-        # Set socket timeout
+        # Atur timeout default untuk semua koneksi socket
         socket.setdefaulttimeout(30)
-        
-        # Create server connection with SSL bypass
-        print("Creating SSL bypass connection...")
-        switch = create_ssl_bypass_server(url, timeout=30)
-        
-        # Test with show version
-        print("Executing 'show version'...")
+
+        # Buat koneksi server. Tidak perlu transport kustom lagi.
+        print("Membuat koneksi...")
+        switch = Server(url)
+
+        # Uji dengan perintah 'show version'
+        print("Menjalankan 'show version'...")
         result = switch.runCmds(version=1, cmds=['show version'], format='json')
-        
+
         if result and len(result) > 0:
-            print("✅ Connection successful!")
+            print("\n✅ Koneksi berhasil!")
             version_info = result[0]
-            print(f"Device Model: {version_info.get('modelName', 'Unknown')}")
-            print(f"System MAC: {version_info.get('systemMacAddress', 'Unknown')}")
-            print(f"Software Version: {version_info.get('version', 'Unknown')}")
-            print(f"Serial Number: {version_info.get('serialNumber', 'Unknown')}")
-            print(f"Hostname: {version_info.get('hostname', 'Unknown')}")
-            
-            # Test additional command
-            try:
-                print("\nTesting additional command: 'show hostname'...")
-                hostname_result = switch.runCmds(version=1, cmds=['show hostname'], format='json')
-                if hostname_result and len(hostname_result) > 0:
-                    print(f"Hostname from command: {hostname_result[0].get('hostname', 'Unknown')}")
-            except Exception as e:
-                print(f"Additional command failed: {e}")
-            
+            print(f"  Model Perangkat: {version_info.get('modelName', 'Tidak diketahui')}")
+            print(f"  System MAC: {version_info.get('systemMacAddress', 'Tidak diketahui')}")
+            print(f"  Versi Software: {version_info.get('version', 'Tidak diketahui')}")
+            print(f"  Nomor Seri: {version_info.get('serialNumber', 'Tidak diketahui')}")
+            print(f"  Hostname: {version_info.get('hostname', 'Tidak diketahui')}")
             return True
         else:
-            print("❌ Connection failed: No response")
+            print("❌ Koneksi gagal: Tidak ada respons dari perangkat.")
             return False
-            
+
     except Exception as e:
-        print(f"❌ Connection failed: {str(e)}")
-        
-        # Provide helpful error messages
+        print(f"\n❌ Koneksi gagal: {str(e)}")
+
+        # Pesan bantuan yang informatif
         error_msg = str(e).lower()
         if "authentication failed" in error_msg or "unauthorized" in error_msg:
-            print("💡 Check your username and password")
+            print("💡 Cek kembali username dan password Anda.")
         elif "connection refused" in error_msg:
-            print("💡 Check if eAPI is enabled on the device:")
-            print("   Configure: 'management api http-commands'")
-            print("   Configure: 'no shutdown' under the management api")
+            print("💡 Pastikan eAPI sudah diaktifkan di perangkat:")
+            print("   (config)# management api http-commands")
+            print("   (config-mgmt-api-http-cmds)# no shutdown")
         elif "timeout" in error_msg or "timed out" in error_msg:
-            print("💡 Check network connectivity and device IP")
-            print("💡 Verify the device is reachable (try ping)")
+            print("💡 Cek konektivitas jaringan dan IP perangkat.")
+            print("💡 Coba lakukan ping ke perangkat.")
         elif "ssl" in error_msg or "certificate" in error_msg:
-            print("💡 SSL certificate issue detected")
-            print("💡 Check device SSL configuration")
-        elif "name or service not known" in error_msg:
-            print("💡 DNS resolution failed - check the IP address")
+            # Pesan ini seharusnya tidak muncul lagi, tapi tetap berguna
+            print("💡 Terdeteksi masalah SSL.")
+        elif "name or service not known" in error_msg or "no address associated" in error_msg:
+            print("💡 Resolusi DNS gagal. Pastikan IP atau hostname sudah benar.")
         elif "no route to host" in error_msg:
-            print("💡 Network routing issue - check network connectivity")
+            print("💡 Masalah routing jaringan. Cek gateway atau firewall.")
         else:
-            print("💡 Unknown error - check device configuration and network")
-            
+            print("💡 Terjadi kesalahan yang tidak diketahui. Periksa konfigurasi perangkat dan jaringan.")
+
         return False
 
 def test_multiple_commands():
-    """Test multiple commands on the device"""
-    
-    host = input("Enter Arista device IP: ")
-    username = input("Enter username: ")
-    password = input("Enter password: ")
-    
-    # Use HTTPS with default port (443)
+    """Menguji beberapa perintah di perangkat."""
+
+    host = input("Masukkan IP perangkat Arista: ")
+    username = input("Masukkan username: ")
+    password = getpass.getpass("Masukkan password: ")
+
     protocol = "https"
-    
-    # Create the connection URL
     url = f"{protocol}://{username}:{password}@{host}/command-api"
-    
+
     commands_to_test = [
         'show version',
         'show hostname',
@@ -179,43 +114,44 @@ def test_multiple_commands():
         'show mac address-table count',
         'show interfaces status'
     ]
-    
+
     try:
         socket.setdefaulttimeout(30)
-        switch = create_ssl_bypass_server(url, timeout=30)
-        
-        print(f"\n🧪 Testing multiple commands on {host}:")
-        print(f"Protocol: HTTPS (default port 443)")
-        print("🔓 SSL certificate verification: DISABLED")
+        switch = Server(url)
+
+        print(f"\n🧪 Menguji beberapa perintah di {host}:")
         print("=" * 50)
-        
+
         for cmd in commands_to_test:
             try:
-                print(f"\nExecuting: {cmd}")
+                print(f"\nMenjalankan: {cmd}")
                 result = switch.runCmds(version=1, cmds=[cmd], format='json')
                 if result and len(result) > 0:
-                    print(f"✅ Success - Response size: {len(str(result[0]))} chars")
+                    print(f"✅ Sukses - Ukuran respons: {len(str(result[0]))} karakter")
                 else:
-                    print("❌ No response")
+                    print("❌ Tidak ada respons")
             except Exception as e:
-                print(f"❌ Failed: {str(e)}")
-        
+                print(f"❌ Gagal: {str(e)}")
+
         print("\n" + "=" * 50)
-        print("Multi-command test completed")
-        
+        print("Pengujian multi-perintah selesai.")
+
     except Exception as e:
-        print(f"❌ Connection setup failed: {str(e)}")
+        print(f"❌ Pengaturan koneksi gagal: {str(e)}")
 
 if __name__ == "__main__":
-    print("=== Arista eAPI Connection Test with SSL Bypass ===")
-    print("This tool tests eAPI connectivity with SSL certificate bypass")
-    print()
-    
-    test_type = input("Select test type:\n1. Basic connection test\n2. Multi-command test\nChoose (1-2, default: 1): ").strip()
-    
+    print("=== Uji Koneksi Arista eAPI dengan Bypass SSL ===")
+    print("Alat ini menguji konektivitas eAPI dengan menonaktifkan verifikasi sertifikat SSL.\n")
+
+    while True:
+        test_type = input("Pilih tipe pengujian:\n1. Uji koneksi dasar\n2. Uji multi-perintah\nPilih (1-2, default: 1): ").strip()
+        if test_type in ["1", "2", ""]:
+            break
+        print("Pilihan tidak valid, silakan pilih 1 atau 2.")
+
     if test_type == "2":
         test_multiple_commands()
     else:
         test_arista_connection()
-    
-    input("\nPress Enter to exit...")
+
+    input("\nTekan Enter untuk keluar...")

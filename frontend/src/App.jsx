@@ -882,25 +882,46 @@ const OutputFilesModal = ({ isOpen, onClose, onCompareSelect }) => {
         </div>
         <div className="modal-body">
           <div className="file-manager-controls">
-            <div className="search-box">
-              <Search size={16} />
-              <input
-                type="text"
-                placeholder="Search files..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
+            <div className="controls-left">
+              <div className="search-box">
+                <Search size={16} />
+                <input
+                  type="text"
+                  placeholder="Search files..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
             </div>
-            {selectedFiles.length === 2 && (
-              <button className="compare-button" onClick={handleCompare}>
-                <GitCompare size={16} />
-                Compare Selected Files
+
+            <div className="controls-right">
+              {selectedFiles.length > 0 && (
+                <>
+                  <span className="selection-counter">
+                    {selectedFiles.length} Selected
+                  </span>
+                  <button
+                    className="delete-selected-button"
+                    onClick={handleDeleteSelected}
+                  >
+                    <Trash2 size={16} />
+                    Delete Selected
+                  </button>
+                </>
+              )}
+
+              {selectedFiles.length === 2 && (
+                <button className="compare-button" onClick={handleCompare}>
+                  <GitCompare size={16} />
+                  Compare Selected Files
+                </button>
+              )}
+
+              <button className="refresh-button" onClick={loadFiles}>
+                <RefreshCw size={16} />
+                Refresh
               </button>
-            )}
-            <button className="refresh-button" onClick={loadFiles}>
-              <RefreshCw size={16} />
-              Refresh
-            </button>
+            </div>
           </div>
 
           {loading ? (
@@ -1072,16 +1093,19 @@ const LogsViewer = ({ isOpen, onClose }) => {
           <div className="logs-controls">
             <div className="filter-group">
               <label>Level:</label>
-              <select
-                value={filterLevel}
-                onChange={(e) => setFilterLevel(e.target.value)}
-              >
-                <option value="ALL">All Levels</option>
-                <option value="ERROR">Error</option>
-                <option value="WARNING">Warning</option>
-                <option value="INFO">Info</option>
-                <option value="DEBUG">Debug</option>
-              </select>
+              <div className="dropdown-container">
+                <select
+                  value={filterLevel}
+                  onChange={(e) => setFilterLevel(e.target.value)}
+                  className="dropdown-select"
+                >
+                  <option value="ALL">All Levels</option>
+                  <option value="ERROR">Error</option>
+                  <option value="WARNING">Warning</option>
+                  <option value="INFO">Info</option>
+                  <option value="DEBUG">Debug</option>
+                </select>
+              </div>
             </div>
             {!isDevelopment && (
               <label className="auto-refresh">
@@ -1645,51 +1669,6 @@ function App() {
     }
   }, [isApiReady, loadOutputFiles]);
 
-  // API Endpoint Status Component
-  const APIEndpointStatus = ({ apiEndpoints }) => {
-    if (!apiEndpoints || Object.keys(apiEndpoints).length === 0) {
-      return null;
-    }
-
-    return (
-      <div className="card">
-        <div className="card-header">
-          <Activity size={20} />
-          <h3>Supported API Endpoints</h3>
-        </div>
-        <div className="card-content">
-          <div className="api-endpoints-grid">
-            {Object.entries(apiEndpoints).map(([deviceType, config]) => (
-              <div key={deviceType} className="api-endpoint-card">
-                <div className="endpoint-header">
-                  <h4>{deviceType.replace("_", " ").toUpperCase()}</h4>
-                  <span className={`api-type-badge ${config.api_type}`}>
-                    {config.api_type.toUpperCase()}
-                  </span>
-                </div>
-                <div className="endpoint-details">
-                  <div className="endpoint-info">
-                    <strong>Endpoint:</strong> {config.endpoint}
-                  </div>
-                  <div className="endpoint-info">
-                    <strong>Protocol:</strong> {config.protocol.toUpperCase()}
-                  </div>
-                  <div className="endpoint-info">
-                    <strong>Port:</strong> {config.port_https} (HTTPS) /{" "}
-                    {config.port_http} (HTTP)
-                  </div>
-                  <div className="endpoint-info">
-                    <strong>Content-Type:</strong> {config.content_type}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
   // Effect to generate chart data when results or filter change
   useEffect(() => {
     const generateChart = async () => {
@@ -2043,11 +2022,7 @@ function App() {
           <div className="card">
             <div className="card-header">
               <Key size={20} />
-              <h3>
-                {!isDevelopment || !window.pywebview
-                  ? "2. Authentication Credentials"
-                  : "1. Authentication Credentials"}
-              </h3>
+              <h3>2. Authentication Credentials</h3>
             </div>
             <div className="card-content">
               <input
@@ -2083,11 +2058,7 @@ function App() {
           <div className="card">
             <div className="card-header">
               <Settings size={20} />
-              <h3>
-                {!isDevelopment || !window.pywebview
-                  ? "3. Select Commands"
-                  : "2. Select Commands"}
-              </h3>
+              <h3>3. Select Commands</h3>
             </div>
             <div className="card-content">
               {Object.keys(availableCommands).length > 0 ? (
@@ -2106,11 +2077,7 @@ function App() {
           <div className="card">
             <div className="card-header">
               <Play size={20} />
-              <h3>
-                {!isDevelopment || !window.pywebview
-                  ? "4. Run Process"
-                  : "3. Run Process"}
-              </h3>
+              <h3>4. Run Process</h3>
             </div>
             <div className="card-content">
               <p className="start-description">
@@ -2187,11 +2154,6 @@ function App() {
           </div>
         </div>
 
-        {/* API Endpoint Status Component */}
-        {systemInfo && apiEndpoints && Object.keys(apiEndpoints).length > 0 && (
-          <APIEndpointStatus apiEndpoints={apiEndpoints} />
-        )}
-
         {/* Progress Section */}
         {isProcessing && progress && (
           <div className="card">
@@ -2243,14 +2205,14 @@ function App() {
                       setShowComparisonModal(true);
                       loadOutputFiles();
                     }}
-                    className="action-button secondary"
+                    className="action-button"
                     disabled={isProcessing}
                   >
                     <GitCompare size={16} /> Compare Snapshots
                   </button>
                   <button
                     onClick={() => handleCompareFiles()}
-                    className="action-button secondary"
+                    className="action-button"
                     disabled={isProcessing}
                   >
                     <GitCompare size={16} /> Compare Files

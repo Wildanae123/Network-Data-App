@@ -23,6 +23,8 @@ import base64
 import sys
 import queue
 import socket
+import subprocess
+import getpass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Union
@@ -31,15 +33,33 @@ from flask import Flask, request, jsonify, send_file, send_from_directory, Respo
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from collections import defaultdict
-from jsonrpclib import Server
 
-# Disable SSL warnings and configure SSL bypass
+# SSL bypass configuration
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+
+# Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Create unverified SSL context for bypassing certificate verification
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
+# Auto-install jsonrpclib-pelix if not available
+try:
+    from jsonrpclib import Server
+    from jsonrpclib.jsonrpc import ServerProxy, SafeTransport
+except ImportError:
+    print("Installing jsonrpclib-pelix...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "jsonrpclib-pelix"])
+        from jsonrpclib import Server
+        from jsonrpclib.jsonrpc import ServerProxy, SafeTransport
+        print("jsonrpclib-pelix installed successfully")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to install jsonrpclib-pelix. Error: {e}")
+        print("Please install manually: pip install jsonrpclib-pelix")
+        sys.exit(1)
 
 # Constants
 DEFAULT_TIMEOUT = 30
@@ -243,28 +263,40 @@ class ComparisonResult:
     compare_result: Dict
 
 def create_ssl_bypass_transport():
-    """Create a transport that bypasses SSL verification."""
-    import jsonrpclib
-    from jsonrpclib.jsonrpc import SafeTransport
+    """Create an transport that bypasses SSL verification (from test_connection.py)."""
     
     class SSLBypassTransport(SafeTransport):
         def make_connection(self, host):
-            # Create HTTPS connection that ignores SSL certificates
+            """Create HTTPS connection with comprehensive SSL bypass."""
             try:
                 # Try Python 3 approach first
                 import http.client
-                return http.client.HTTPSConnection(
+                
+                # Create unverified SSL context
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                
+                # Create connection with SSL bypass
+                connection = http.client.HTTPSConnection(
                     host,
-                    context=ssl_context,
-                    timeout=30
+                    context=context,
+                    timeout=DEFAULT_TIMEOUT
                 )
+                
+                logger.debug(f"Created HTTPS connection for {host}")
+                return connection
+                
             except ImportError:
                 # Fallback for Python 2
                 import httplib
                 return httplib.HTTPSConnection(
                     host,
-                    timeout=30
+                    timeout=DEFAULT_TIMEOUT
                 )
+            except Exception as e:
+                logger.error(f"Failed to create connection: {e}")
+                raise
     
     return SSLBypassTransport()
 
@@ -325,54 +357,87 @@ class AristaEAPIClient(APIClientBase):
         if not self.port:
             self.port = API_ENDPOINTS['arista_eos'][f'port_{protocol}']
 
-            self.server_url = f"{self.protocol}://{self.username}:{self.password}@{self.host}:{self.port}{self.endpoint}"
+        self.server_url = f"{self.protocol}://{self.username}:{self.password}@{self.host}:{self.port}{self.endpoint}"
         self.switch = None
+        
+        # Set global socket timeout (from test_connection.py)
+        socket.setdefaulttimeout(self.timeout)
+        
+        logger.debug(f"Initialized Arista eAPI client for {self.host}:{self.port} using {self.protocol}")
     
     def _get_server_connection(self):
         """Get or create JSON-RPC server connection."""
         if self.switch is None:
             try:
-                from jsonrpclib.jsonrpc import ServerProxy
-
-                # Use custom transport that bypasses SSL
+                # Use transport that bypasses SSL comprehensively
                 transport = create_ssl_bypass_transport()
 
+                # Create server proxy with SSL bypass transport
                 self.switch = ServerProxy(
                     self.server_url,
                     transport=transport,
                     verbose=False
                 )
 
-                # Set socket timeout
-                socket.setdefaulttimeout(self.timeout)
+                logger.debug(f"Created JSON-RPC server connection for {self.host}")
 
             except Exception as e:
-                logger.error(f"Failed to create JSON-RPC server connection: {e}")
+                logger.error(f"Failed to create JSON-RPC server connection for {self.host}: {e}")
                 raise
         return self.switch
 
     def test_connection(self) -> tuple[bool, str]:
         """Test eAPI connectivity with show version."""
         try:
+            logger.debug(f"Testing eAPI connection to {self.host}")
             switch = self._get_server_connection()
+            
+            # Test with show version command
             result = switch.runCmds(version=1, cmds=['show version'], format='json')
+            
             if result and len(result) > 0:
-                return True, "eAPI connection successful"
+                version_info = result[0]
+                device_model = version_info.get('modelName', 'Unknown')
+                hostname = version_info.get('hostname', 'Unknown')
+                logger.info(f"eAPI connection successful to {self.host} - {device_model} ({hostname})")
+                return True, f"eAPI connection successful - {device_model}"
             else:
-                return False, "eAPI test failed: No response"
+                error_msg = "eAPI test failed: No response from device"
+                logger.warning(f"{error_msg} for {self.host}")
+                return False, error_msg
+                
         except Exception as e:
-            error_msg = f"eAPI connection failed: {str(e)}"
-            logger.error(error_msg)
+            error_msg_original = str(e).lower()
+            
+            # Error handling with specific messages
+            if "authentication failed" in error_msg_original or "unauthorized" in error_msg_original:
+                error_msg = "eAPI Authentication failed: Check username and password"
+            elif "connection refused" in error_msg_original:
+                error_msg = "eAPI Connection refused: Check if eAPI is enabled on device. Run: (config)# management api http-commands; (config-mgmt-api-http-cmds)# no shutdown"
+            elif "timeout" in error_msg_original or "timed out" in error_msg_original:
+                error_msg = f"eAPI Connection timeout after {self.timeout}s: Check network connectivity"
+            elif "ssl" in error_msg_original or "certificate" in error_msg_original:
+                error_msg = "eAPI SSL/Certificate error: Device HTTPS configuration issue"
+            elif "name or service not known" in error_msg_original or "no address associated" in error_msg_original:
+                error_msg = "eAPI DNS resolution failed: Check IP address or hostname"
+            elif "no route to host" in error_msg_original:
+                error_msg = "eAPI No route to host: Check network routing and firewall"
+            else:
+                error_msg = f"eAPI connection failed: {str(e)}"
+            
+            logger.error(f"{error_msg} for {self.host}")
             return False, error_msg
     
     def execute_commands(self, commands: List[str]) -> tuple[Dict, Optional[str]]:
-        """Execute commands via Arista eAPI using jsonrpclib."""
+        """Execute commands via Arista eAPI using jsonrpclib with error handling."""
         try:
             switch = self._get_server_connection()
-            logger.debug(f"Executing commands via eAPI: {commands}")
+            logger.debug(f"Executing {len(commands)} commands via eAPI on {self.host}: {commands}")
             
             # Execute commands using jsonrpclib
+            start_time = time.time()
             result = switch.runCmds(version=1, cmds=commands, format='json')
+            execution_time = time.time() - start_time
             
             if result and isinstance(result, list):
                 # Transform result into command-output mapping
@@ -383,27 +448,29 @@ class AristaEAPIClient(APIClientBase):
                     else:
                         output[cmd] = {"error": "No result returned for this command"}
                 
-                logger.debug(f"Successfully executed {len(commands)} commands via eAPI")
+                logger.debug(f"Successfully executed {len(commands)} commands via eAPI on {self.host} in {execution_time:.2f}s")
                 return output, None
             else:
                 error_msg = "Invalid eAPI response format"
-                logger.error(error_msg)
+                logger.error(f"{error_msg} for {self.host}")
                 return {}, error_msg
                 
         except Exception as e:
-            error_msg = f"eAPI execution error: {str(e)}"
-            logger.error(error_msg)
+            error_msg_original = str(e).lower()
             
-            # Try to provide more specific error information
-            if "Authentication failed" in str(e):
-                error_msg = "eAPI Authentication failed: Check username/password"
-            elif "Connection refused" in str(e):
-                error_msg = "eAPI Connection refused: Check if eAPI is enabled on device"
-            elif "timeout" in str(e).lower():
-                error_msg = f"eAPI Connection timeout after {self.timeout}s"
-            elif "SSL" in str(e) or "certificate" in str(e).lower():
-                error_msg = "eAPI SSL/Certificate error: Check device HTTPS configuration"
+            # Error handling for command execution
+            if "authentication failed" in error_msg_original:
+                error_msg = "eAPI Authentication failed during command execution"
+            elif "connection refused" in error_msg_original:
+                error_msg = "eAPI Connection lost during command execution"
+            elif "timeout" in error_msg_original:
+                error_msg = f"eAPI Command execution timeout after {self.timeout}s"
+            elif "invalid command" in error_msg_original or "cli command" in error_msg_original:
+                error_msg = f"eAPI Invalid command in list: {commands}"
+            else:
+                error_msg = f"eAPI execution error: {str(e)}"
             
+            logger.error(f"{error_msg} for {self.host}")
             return {}, error_msg
 
 class ConfigManager:
@@ -551,6 +618,7 @@ class NetworkDeviceAPIManager:
         api_response_time = None
         
         try:
+            # Device type detection
             if model_sw and device_info.device_type == "autodetect":
                 detected_type = self.detect_device_type_by_model(model_sw)
                 device_info.device_type = detected_type
@@ -561,9 +629,11 @@ class NetworkDeviceAPIManager:
             
             logger.info(f"Connecting to device: {device_info.host} via {detected_device_type} API (attempt {retry_count + 1})")
             
+            # Create API client
             api_client = self.create_api_client(device_info)
             api_endpoint = f"{device_info.protocol}://{device_info.host}:{api_client.port}{api_client.endpoint}"
             
+            # Test connection with error handling
             api_test_start = time.time()
             connection_ok, connection_msg = api_client.test_connection()
             api_response_time = time.time() - api_test_start
@@ -573,8 +643,9 @@ class NetworkDeviceAPIManager:
                 logger.error(error_msg)
                 return None, error_msg, DEVICE_STATUS["FAILED"], detected_device_type, api_endpoint, api_response_time
             
-            logger.info(f"Successfully connected to {device_info.host} via {detected_device_type} API")
+            logger.info(f"Successfully connected to {device_info.host} via {detected_device_type} API (response time: {api_response_time:.2f}s)")
             
+            # Get commands configuration
             commands_by_category = self.config_manager.get_commands_for_device(detected_device_type)
             
             if not commands_by_category:
@@ -589,7 +660,9 @@ class NetworkDeviceAPIManager:
                     if category in commands_by_category:
                         filtered_commands[category] = commands_by_category[category]
                 commands_by_category = filtered_commands
+                logger.debug(f"Filtered to selected command categories: {list(filtered_commands.keys())}")
             
+            # Execute commands by category
             for category, commands in commands_by_category.items():
                 logger.debug(f"Processing category '{category}' with {len(commands)} commands via API")
                 
@@ -652,7 +725,8 @@ class DataProcessor:
                     "selected_commands": selected_commands,
                     "total_devices": len(results),
                     "successful_devices": len([r for r in results if r.status == "Success"]),
-                    "failed_devices": len([r for r in results if r.status == "Failed"])
+                    "failed_devices": len([r for r in results if r.status == "Failed"]),
+                    "connection_method": "API"
                 },
                 "results": [asdict(result) for result in results]
             }
@@ -704,6 +778,12 @@ class DataProcessor:
         try:
             first_data = self.load_results(first_snapshot_file)
             second_data = self.load_results(second_snapshot_file)
+            
+            # Handle both old and new format with metadata
+            if 'results' in first_data:
+                first_data = first_data['results']
+            if 'results' in second_data:
+                second_data = second_data['results']
             
             # Create device mapping
             first_devices = {item["ip_mgmt"]: item for item in first_data}
@@ -992,7 +1072,7 @@ def process_single_device_with_retry(device_info: DeviceInfo, metadata: DeviceMe
             else:
                 retry_count += 1
                 if retry_count < max_retries:
-                    logger.info(f"Retrying {device_info.host} via API (attempt {retry_count + 1}/{max_retries})")
+                    logger.info(f"Retrying {device_info.host} via API (attempt {retry_count + 1}/{max_retries}) after error: {error}")
                     time.sleep(2)
                     continue
                 else:
@@ -1031,7 +1111,7 @@ def process_single_device_with_retry(device_info: DeviceInfo, metadata: DeviceMe
                     api_status="Error"
                 )
             else:
-                logger.info(f"Retrying {device_info.host} due to exception (attempt {retry_count + 1}/{max_retries})")
+                logger.info(f"Retrying {device_info.host} due to exception (attempt {retry_count + 1}/{max_retries}): {str(e)}")
                 time.sleep(2)
                 continue
 
@@ -1289,7 +1369,7 @@ def get_system_info():
                 "default_retry_attempts": DEFAULT_RETRY_ATTEMPTS,
                 "output_directory": str(data_processor.output_dir),
                 "version": "2.2.0-DEV",
-                "connection_method": "Vendor APIs (HTTP/HTTPS)",                
+                "connection_method": "Vendor APIs",                
             }
         })
         
@@ -1499,10 +1579,10 @@ def process_devices_from_file():
         })
         
     except Exception as e:
-        logger.error(f"Error starting process: {e}")
+        logger.error(f"Error starting API process: {e}")
         return jsonify({
             "status": "error",
-            "message": f"Error starting process: {str(e)}"
+            "message": f"Error starting API process: {str(e)}"
         }), 500
 
 @app.route('/api/processing_status/<session_id>', methods=['GET'])
@@ -1693,11 +1773,11 @@ def stop_processing(session_id):
         if session_id in processing_sessions:
             session = processing_sessions[session_id]
             session.is_stopped = True
-            logger.info(f"Processing stopped for session {session_id}")
+            logger.info(f"API processing stopped for session {session_id}")
             
             return jsonify({
                 "status": "success",
-                "message": "Processing stop requested"
+                "message": "API processing stop requested"
             })
         else:
             return jsonify({
@@ -1706,10 +1786,10 @@ def stop_processing(session_id):
             }), 404
             
     except Exception as e:
-        logger.error(f"Error stopping processing: {e}")
+        logger.error(f"Error stopping API processing: {e}")
         return jsonify({
             "status": "error",
-            "message": f"Error stopping processing: {str(e)}"
+            "message": f"Error stopping API processing: {str(e)}"
         }), 500
 
 # Health check endpoint
@@ -1722,7 +1802,9 @@ def health_check():
         "version": "2.2.0-DEV",
         "connection_method": "APIs",
         "supported_apis": list(API_ENDPOINTS.keys()),
-        "output_directory": str(data_processor.output_dir)
+        "output_directory": str(data_processor.output_dir),
+        "ssl_bypass": "Enabled",
+        "jsonrpclib_version": "SSL bypass"
     })
 
 def open_browser():
@@ -1738,16 +1820,5 @@ if __name__ == '__main__':
     logger.info(f"Upload directory: {UPLOAD_FOLDER}")
     logger.info(f"Supported API endpoints: {list(API_ENDPOINTS.keys())}")
     logger.info(f"Available comparison commands: {list(ARISTA_COMPARISON_COMMANDS.keys())}")
-    
-    # Open browser in a separate thread
-    browser_thread = threading.Thread(target=open_browser)
-    browser_thread.daemon = True
-    browser_thread.start()
-    
-    # Production server configuration
-    app.run(
-        host='127.0.0.1',
-        port=5000,
-        debug=False,
-        threaded=True
-    )
+    logger.info("SSL bypass enabled for all API connections")
+    logger.info("Error handling and retry mechanisms activated")
